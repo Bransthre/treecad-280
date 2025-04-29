@@ -1,13 +1,6 @@
 import gc
 from cadquery import *
-from cadquery.vis import show
-
-# r = None
-# with open("../cad-recode-v1.5/train/batch_00/266.py", "r") as f:
-#     cad = f.read()
-# exec(cad)
-
-
+from no_interaction_vis import no_interact_show
 import cadquery as cq
 
 w0 = cq.Workplane("ZX", origin=(0, 66, 0))
@@ -61,11 +54,10 @@ for example_id in [266, 366, 466]:
             print(
                 f"Rendering example {example_id} with roll {roll} and elevation {elevation}"
             )
-            show(
+            no_interact_show(
                 r,
                 screenshot=f"./img_debug/{example_id}-img_r{roll}_e{elevation}.png",
                 roll=roll,
                 elevation=elevation,
                 interact=False,
             )
-            gc.collect()
