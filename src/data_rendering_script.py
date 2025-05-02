@@ -2,9 +2,7 @@ import vtkmodules
 from cadquery import *
 from cadquery.vis import show
 
-import re
 import os
-import json
 import tqdm
 
 dataset_dir = "../cad-recode-v1.5/train/"

@@ -3,39 +3,22 @@ from cadquery import (
     Workplane,
     Assembly,
     Sketch,
-    Compound,
-    Color,
     Vector,
-    Location,
-    Face,
-    Edge,
 )
-from cadquery.occ_impl.assembly import _loc2vtk, toVTKAssy
+from cadquery.occ_impl.assembly import toVTKAssy
 
 from typing import Union, Any, List, Tuple, Iterable, cast, Optional
 
-from typish import instance_of
-
 from OCP.TopoDS import TopoDS_Shape
-from OCP.Geom import Geom_BSplineSurface
-
-from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
-from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkRenderingCore import (
     vtkMapper,
-    vtkRenderWindowInteractor,
     vtkActor,
     vtkProp3D,
-    vtkPolyDataMapper,
-    vtkAssembly,
     vtkRenderWindow,
     vtkWindowToImageFilter,
     vtkRenderer,
-    vtkPropCollection,
 )
-from vtkmodules.vtkCommonCore import vtkPoints
-from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkCommonColor import vtkNamedColors
 from vtkmodules.vtkIOImage import vtkPNGWriter
 
