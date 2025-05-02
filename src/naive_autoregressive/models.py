@@ -3,39 +3,42 @@ import torch.nn as nn
 from torchvision import models
 
 from vocabularies import vocabularies
+from datrie import Trie
 
 
-class Tokenizer(nn.Module):
+class Tokenizer:
     def __init__(self, vocabularies):
-        super().__init__()
-        self.pad_token = "<PAD>"
-        self.sos_token = "<SOS>"
-        self.eos_token = "<EOS>"
-        self.vocabularies = vocabularies + [
-            self.pad_token,
-            self.sos_token,
-            self.eos_token,
-        ]
-        self.token_to_index = {token: i for i, token in enumerate(vocabularies)}
-        self.index_to_token = {i: token for i, token in enumerate(vocabularies)}
-        self.vocab_size = len(vocabularies)
+        self._pad_token = self._token_to_index["<PAD>"]
+        self._sos_token = self._token_to_index["<SOS>"]
+        self._eos_token = self._token_to_index["<EOS>"]
+        self._vocabulary = ["<PAD>", "<SOS>", "<EOS>"] + vocabularies
+        self._token_to_index = {token: i for i, token in enumerate(self._vocabulary)}
+        self._index_to_token = {i: token for i, token in enumerate(self._vocabulary)}
+        self._vocabulary_size = len(self._vocabulary)
+        self._vocabulary_set = set(self._vocabulary)
 
-        self.pad_token_id = self.token_to_index[self.pad_token]
-        self.sos_token_id = self.token_to_index[self.sos_token]
-        self.eos_token_id = self.token_to_index[self.eos_token]
+        self._max_token_length = max(len(token) for token in self._vocabulary)
+        self._max_sequence_length = 512
 
-    def tokenize(self, text):
-        tokens = text.split()  # TODO: We need to do a bit more than this?
-        token_ids = [
-            self.token_to_index.get(token, self.pad_token_id) for token in tokens
-        ]
-        return token_ids
+        self._trie = Trie(self._vocabulary)
+        for token, index in self._token_to_index.items():
+            self._trie[token] = index
 
-    def detokenize(self, token_ids):
+    def tokenize(self, current_expr):
+        token_indices = []
+        while current_expr:
+            match = self._trie.longest_prefix(current_expr)
+            if match:
+                token_indices.append(self._token_to_index[match])
+                current_expr = current_expr[len(match) :]
+        return token_indices
+
+    def detokenize(self, token_indices):
         tokens = [
-            self.index_to_token.get(token_id, self.pad_token) for token_id in token_ids
+            self._index_to_token.get(token_id, self._pad_token)
+            for token_id in token_indices
         ]
-        return " ".join(tokens)
+        return "".join(tokens)
 
 
 class VisualEncoder(nn.Module):

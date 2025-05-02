@@ -5,6 +5,7 @@ It will receive many images and output a sequence of tokens as the cadquery code
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import models
 
 from vocabularies import vocabularies
@@ -44,3 +45,50 @@ class Tokenizer:
             for token_id in token_indices
         ]
         return "".join(tokens)
+
+
+class CodeGenerator(nn.Module):
+    """
+    The module naively takes in a pair of images (target rendering, current rendering)
+    and outputs a sequence of tokens resembling the CAD file code.
+    """
+
+    def __init__(self, output_dim):
+        super().__init__()
+        self.encoder = models.VisionTransformer(
+            pretrained=True,
+            image_size=224,
+            patch_size=16,
+            num_classes=output_dim,
+            dim=768,
+            depth=12,
+            heads=12,
+            mlp_dim=3072,
+        )  # I don't know if this is the right parameters but here we go.
+        self.image_feedforward = nn.Linear(768, 512)
+        self.tokenizer = Tokenizer(vocabularies)
+        self.token_embedding = nn.Embedding(len(self.tokenizer._vocabulary), 512)
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(d_model=512, nhead=8, batch_first=True),
+            num_layers=6,
+        )
+        self.output_dim = output_dim
+
+    def forward(self, images, tokenized):
+        """
+        A few arbitrary design decisions:
+        (1) We will add the image embeddings together.
+        Assume input is B x n_renderings x 3 x 224 x 224
+
+        Function returns the token embeddings and the decoder output.
+        """
+        image_embeddings = self.encoder(images)
+        image_embeddings = self.image_feedforward(image_embeddings.sum(dim=1))
+        image_embeddings = image_embeddings.unsqueeze(1)
+        decoder_input = self.token_embedding(tokenized)
+        decoder_output = self.decoder(decoder_input, image_embeddings)
+        return decoder_output
+
+
+class AutoRegressiveDataset(IterableDataset):
+    pass
