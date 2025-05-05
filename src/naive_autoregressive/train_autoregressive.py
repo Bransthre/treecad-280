@@ -3,24 +3,34 @@ This file contains the code for training an autoregressive model using a dataset
 It will receive many images and output a sequence of tokens as the cadquery code.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import models
-from torchtune.modules import RotaryPositionalEmbeddings
 
+from .model_utils import RotaryPositionalEmbeddings
+
+import cadquery as cq
 from cadquery import *
 from no_interaction_vis import no_interact_show
 import matplotlib.pyplot as plt
 
-from vocabularies import vocabularies
+from .vocabularies import vocabularies
 from datrie import Trie
 
 import os
+import yaml
 import wandb
-import tqdm
+from tqdm import tqdm
+from absl import flags
 
 # TODO: Set up wandb logging
+
+FLAGS = flags.FLAGS
+flags.DEFINE_string("yaml_file_path", "", "yaml file path")
+flags.DEFINE_float("flt", 0.0, "")
+flags.DEFINE_integer("batch_size", 512, "batch size")
 
 
 class Tokenizer:
@@ -37,7 +47,8 @@ class Tokenizer:
         self._max_token_length = max(len(token) for token in self._vocabulary)
         self._max_sequence_length = 512
 
-        self._trie = Trie(self._vocabulary)
+        self._characters = sorted(list(set("".join(self._vocabulary))))
+        self._trie = Trie(self._characters)
         for token, index in self._token_to_index.items():
             self._trie[token] = index
 
@@ -48,8 +59,11 @@ class Tokenizer:
             if match:
                 token_indices.append(self._token_to_index[match])
                 current_expr = current_expr[len(match) :]
-        token_indices += [self._pad_token] * (
-            self._max_sequence_length - len(token_indices)
+        token_indices = (
+            [self._sos_token]
+            + token_indices
+            + [self._eos_token]
+            + [self._pad_token] * (self._max_sequence_length - len(token_indices) - 2)
         )
         return token_indices
 
@@ -85,7 +99,7 @@ class BaselineCADGenerator(nn.Module):
             nn.TransformerDecoderLayer(d_model=768, nhead=8, batch_first=True),
             num_layers=6,
         )
-        self.rope_embedding = RotaryPositionalEmbeddings(dim=768, max_len=512)
+        # self.rope_embedding = RotaryPositionalEmbeddings(dim=768)
         self.output_dim = output_dim
 
     def forward(self, renderings, tokenized):
@@ -99,7 +113,7 @@ class BaselineCADGenerator(nn.Module):
         """
         concat_img_repr = torch.cat(renderings, dim=1)  # B x kC x 224 x 224
         concat_img_repr = concat_img_repr * 2 - 1
-        concat_img_repr = self.rope_embedding(concat_img_repr)
+        # concat_img_repr = self.rope_embedding(concat_img_repr)
         image_embeddings = self.encoder(concat_img_repr)  # Normalize to [-1, 1]
         image_embeddings = image_embeddings.unsqueeze(1)
         decoder_input = self.token_embedding(tokenized)
@@ -119,11 +133,11 @@ def render_cadquery_code(cadquery_code, rolls, elevations):
     temp_dir = os.path.join(os.getcwd(), "temp_renderings")
     os.makedirs(temp_dir, exist_ok=True)
 
-    r = None
-    exec(cadquery_code)
+    cq_namespace = {"r": None}
+    exec("import cadquery as cq;" + cadquery_code, cq_namespace)
     for img_idx, (roll, elevation) in enumerate(zip(rolls, elevations)):
         no_interact_show(
-            r,
+            cq_namespace["r"],
             screenshot=os.path.join(temp_dir, f"img_{img_idx}.png"),
             roll=roll,
             elevation=elevation,
@@ -150,7 +164,7 @@ def render_cadquery_code(cadquery_code, rolls, elevations):
 
 
 class AutoRegressiveDataset(IterableDataset):
-    def __init__(self, batch_size, num_renders):
+    def __init__(self, batch_size, num_renders, train=True):
         """
         1. Set up the attributes
         2. Initialize the tokenizer
@@ -162,33 +176,49 @@ class AutoRegressiveDataset(IterableDataset):
         self.tokenizer = Tokenizer(vocabularies)
 
         # Get content of all files in cad-recode v1.5 dataset
-        dataset_dir = "~/cad-recode-v1.5/train/"
-        batch_ids = [f"0{i}" for i in range(10)] + list(range(10, 100))
         all_cad_code = []
         all_tokenized_texts = []
-        for batch_id in tqdm.tqdm(batch_ids, desc="Processing batches", leave=False):
-            batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
 
-            # Check if the directory exists
-            if os.path.exists(batch_dir):
-                # Iterate through all files in the batch directory
-                for _, file_name in tqdm.tqdm(
+        if train:
+            dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
+            batch_ids = [f"0{i}" for i in range(10)] + list(range(10, 100))
+            for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
+                batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
+
+                # Check if the directory exists
+                for _, file_name in tqdm(
                     enumerate(os.listdir(batch_dir)),
                     desc=f"Processing files in {batch_dir}",
                 ):
                     file_path = os.path.join(batch_dir, file_name)
                     if os.path.isfile(file_path):
                         with open(file_path, "r") as file:
-                            content = file.read()
-                            all_cad_code.append(content)
-                            all_tokenized_texts.append(self.tokenizer.tokenize(content))
-            else:
-                print(f"Directory {batch_dir} does not exist.")
+                            contents = "".join(
+                                [s.replace("\n", ";") for s in file.readlines()[1:]]
+                            )
+                            all_cad_code.append(contents)
+                            all_tokenized_texts.append(
+                                self.tokenizer.tokenize(contents)
+                            )
+        else:
+            dataset_dir = "/home/brandonh/cad-recode-v1.5/val/"
+            for _, file_name in tqdm(
+                enumerate(os.listdir(dataset_dir)),
+                desc=f"Processing files in {dataset_dir}",
+            ):
+                file_path = os.path.join(dataset_dir, file_name)
+                if os.path.isfile(file_path):
+                    with open(file_path, "r") as file:
+                        contents = "".join(
+                            [s.replace("\n", ";") for s in file.readlines()[1:]]
+                        )
+                        all_cad_code.append(contents)
+                        all_tokenized_texts.append(self.tokenizer.tokenize(contents))
 
         self.all_cad_code = all_cad_code
-        self.all_tokenized_texts = all_tokenized_texts
+        self.all_tokenized_texts = torch.Tensor(all_tokenized_texts)
         self.rolls_range = torch.arange(-180, 180, 18)
-        self.elevations_range = torch.arange(-90, 90, 10)
+        self.elevations_range = torch.arange(-90, 90, 9)
 
     def _produce_batch(self):
         """
@@ -200,14 +230,14 @@ class AutoRegressiveDataset(IterableDataset):
         random_angles = torch.randint(
             low=0,
             high=20,
-            shape=(self.batch_size, self.num_renders, 2),
+            size=(self.batch_size, self.num_renders, 2),
         )
         rolls = self.rolls_range[random_angles[:, :, 0]]
         elevations = self.elevations_range[random_angles[:, :, 1]]
         random_cad_indices = torch.randint(
             low=0,
             high=len(self.all_tokenized_texts),
-            shape=(self.batch_size,),
+            size=(self.batch_size,),
         )
         renderings = []
         for i in range(self.batch_size):
@@ -218,12 +248,12 @@ class AutoRegressiveDataset(IterableDataset):
                     elevations[i],
                 )
             )
+        renderings = torch.Tensor(np.array(renderings))  # (B x k x 3 x 224 x 224)
 
         return {
             "tokenized_texts": self.all_tokenized_texts[random_cad_indices],
             "rolls": rolls,
             "elevations": elevations,
-            "cad_code": self.all_cad_code[random_cad_indices],
             "renderings": renderings,
         }
 
@@ -232,12 +262,67 @@ class AutoRegressiveDataset(IterableDataset):
             yield self._produce_batch()
 
 
-class AutoRegressiveTrainer:
-    def __init__(self, dataset, model, tokenizer):
-        pass
+def train(config):
+    wandb.init({"entity": "brandonh", "project": "280-project", "config": {}})
 
-    def loss_fn(self, output, target):
-        pass
+    gpus = list(range(torch.cuda.device_count()))
 
-    def train(self, epochs):
-        pass
+    dataset = AutoRegressiveDataset()
+    model = BaselineCADGenerator(output_dim=config["vocab_size"]).cuda()
+    if config["ckpt"] is not None:
+        model.load_state_dict(
+            torch.load("model_weights.pth", map_location="cuda:0", weights_only=True)
+        )
+    model = nn.DataParallel(model, gpus)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=8,
+        drop_last=True,
+    )
+
+    optimizer = torch.optim.Adam(lr=config["lr"])
+    criterion = nn.CrossEntropyLoss()
+
+    step = config["restore_step"] if config["restore_step"] is not None else 0
+
+    for i in tqdm(range(1, config["total_steps"] + 1)):
+        for batch in dataloader:
+            tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
+            # rolls = batch["rolls"].squeeze().cuda()  # (B,)
+            # elevations = batch["elevations"].squeeze().cuda()  # (B,)
+            renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 224 x 224)
+            optimizer.zero_grad()
+            outputs = model(renderings, tokenized_texts[:, :-1, :])
+            loss = criterion(outputs, tokenized_texts[:, 1:, :])
+            loss.backward()
+            optimizer.step()
+
+            loss = loss.item()
+            wandb.log({"loss": loss}, step)
+
+            if step % config["eval_steps"] == 0:
+                evaluate(model)
+
+            if step % config["save_steps"] == 0:
+                torch.save(model.module.state_dict(), "model_weights.pth")
+
+            step += 1
+
+
+def evaluate(model, config):
+    dataset = AutoRegressiveDataset()
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config["batch_size"],
+        shuffle=False,
+        num_workers=8,
+        drop_last=True,
+    )
+
+    return
+
+
+if __name__ == "__main__":
+    train()
