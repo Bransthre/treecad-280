@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import models
+from torchtune.modules import RotaryPositionalEmbeddings
 
 from cadquery import *
 from no_interaction_vis import no_interact_show
@@ -84,6 +85,7 @@ class BaselineCADGenerator(nn.Module):
             nn.TransformerDecoderLayer(d_model=768, nhead=8, batch_first=True),
             num_layers=6,
         )
+        self.rope_embedding = RotaryPositionalEmbeddings(dim=768, max_len=512)
         self.output_dim = output_dim
 
     def forward(self, renderings, tokenized):
@@ -96,7 +98,9 @@ class BaselineCADGenerator(nn.Module):
         Assume input `renderings` is B x k x C x 224 x 224
         """
         concat_img_repr = torch.cat(renderings, dim=1)  # B x kC x 224 x 224
-        image_embeddings = self.encoder(concat_img_repr * 2 - 1)  # Normalize to [-1, 1]
+        concat_img_repr = concat_img_repr * 2 - 1
+        concat_img_repr = self.rope_embedding(concat_img_repr)
+        image_embeddings = self.encoder(concat_img_repr)  # Normalize to [-1, 1]
         image_embeddings = image_embeddings.unsqueeze(1)
         decoder_input = self.token_embedding(tokenized)
         decoder_output_logits = self.decoder(decoder_input, image_embeddings)
