@@ -1,5 +1,5 @@
 import cadquery as cq
-from no_interaction_vis import no_interact_show
+from naive_autoregressive.no_interaction_vis import no_interact_show
 import matplotlib.pyplot as plt
 import os
 

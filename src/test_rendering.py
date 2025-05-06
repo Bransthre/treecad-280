@@ -1,6 +1,6 @@
 import gc
 from cadquery import *
-from no_interaction_vis import no_interact_show
+from naive_autoregressive.no_interaction_vis import no_interact_show
 import cadquery as cq
 
 cad_code = """

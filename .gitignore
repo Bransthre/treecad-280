@@ -2,3 +2,4 @@
 *.png
 *.json
 *.pyc
+wandb*

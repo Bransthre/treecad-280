@@ -1,3 +1,5 @@
 lr: 3e-4
-batch_size:
-vocab_size: 
+batch_size: 64
+vocab_size: 53
+num_renders: 10
+ckpt: None

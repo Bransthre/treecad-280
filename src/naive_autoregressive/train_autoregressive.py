@@ -9,14 +9,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from torchvision import models
 
-from .model_utils import RotaryPositionalEmbeddings
 
 import cadquery as cq
 from cadquery import *
-from no_interaction_vis import no_interact_show
 import matplotlib.pyplot as plt
 
-from .vocabularies import vocabularies
+from model_utils import RotaryPositionalEmbeddings
+from no_interaction_vis import no_interact_show
+from vocabularies import vocabularies
 from datrie import Trie
 
 import os
@@ -25,10 +25,10 @@ import wandb
 from tqdm import tqdm
 from absl import flags
 
-# TODO: Set up wandb logging
-
 FLAGS = flags.FLAGS
-flags.DEFINE_string("yaml_file_path", "", "yaml file path")
+flags.DEFINE_string(
+    "yaml_file_path", "/home/brandonh/src/config/default_config.yaml", "yaml file path"
+)
 flags.DEFINE_float("flt", 0.0, "")
 flags.DEFINE_integer("batch_size", 512, "batch size")
 
@@ -75,6 +75,22 @@ class Tokenizer:
         return "".join(tokens)
 
 
+class RollElevationEmbedding(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.d_model = d_model
+        self.roll_embedding = nn.Embedding(20, d_model)
+        self.elevation_embedding = nn.Embedding(20, d_model)
+
+    def forward(self, roll_idxs, elevation_idxs):
+        # Alternative iis to just use sinusoidal embeddings.
+        roll_ohe = torch.nn.functional.one_hot(roll_idxs, num_classes=20)
+        elevation_ohe = torch.nn.functional.one_hot(elevation_idxs, num_classes=20)
+        roll_embedding = self.roll_embedding(roll_ohe)
+        elevation_embedding = self.elevation_embedding(elevation_ohe)
+        return torch.cat((roll_embedding, elevation_embedding), dim=-1)
+
+
 class BaselineCADGenerator(nn.Module):
     """
     The module naively takes in a pair of images (target rendering, current rendering)
@@ -84,25 +100,24 @@ class BaselineCADGenerator(nn.Module):
     def __init__(self, output_dim):
         super().__init__()
         self.encoder = models.VisionTransformer(
-            pretrained=True,
             image_size=224,
             patch_size=16,
             num_classes=output_dim,
-            dim=768,
-            depth=12,
-            heads=12,
+            num_layers=12,
+            num_heads=12,
+            hidden_dim=768,
             mlp_dim=3072,
         )  # I don't know if this is the right parameters but here we go.
         self.tokenizer = Tokenizer(vocabularies)
         self.token_embedding = nn.Embedding(len(self.tokenizer._vocabulary), 768)
+        self.roll_elevation_embedding = RollElevationEmbedding(256)
         self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d_model=768, nhead=8, batch_first=True),
+            nn.TransformerDecoderLayer(d_model=1024, nhead=8, batch_first=True),
             num_layers=6,
         )
-        # self.rope_embedding = RotaryPositionalEmbeddings(dim=768)
         self.output_dim = output_dim
 
-    def forward(self, renderings, tokenized):
+    def forward(self, renderings, tokenized, roll_idxs, elevation_idxs):
         """
         A few arbitrary design decisions, which are all heavily dependent on
         (tree-diffusion/td/learning/gpt.py).
@@ -117,7 +132,13 @@ class BaselineCADGenerator(nn.Module):
         image_embeddings = self.encoder(concat_img_repr)  # Normalize to [-1, 1]
         image_embeddings = image_embeddings.unsqueeze(1)
         decoder_input = self.token_embedding(tokenized)
-        decoder_output_logits = self.decoder(decoder_input, image_embeddings)
+        roll_elevation_embeddings = self.roll_elevation_embedding(
+            roll_idxs, elevation_idxs
+        )
+        visual_embeddings = torch.cat(
+            (image_embeddings, roll_elevation_embeddings), dim=-1
+        )  # B x k x (768 + 256)
+        decoder_output_logits = self.decoder(decoder_input, visual_embeddings)
         return decoder_output_logits
 
 
@@ -181,7 +202,7 @@ class AutoRegressiveDataset(IterableDataset):
 
         if train:
             dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
-            batch_ids = [f"0{i}" for i in range(10)] + list(range(10, 100))
+            batch_ids = [f"0{i}" for i in range(5)]  # + list(range(10, 100))
             for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
                 batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
 
@@ -252,8 +273,8 @@ class AutoRegressiveDataset(IterableDataset):
 
         return {
             "tokenized_texts": self.all_tokenized_texts[random_cad_indices],
-            "rolls": rolls,
-            "elevations": elevations,
+            "rolls": random_angles[:, :, 0],
+            "elevations": random_angles[:, :, 1],
             "renderings": renderings,
         }
 
@@ -263,11 +284,11 @@ class AutoRegressiveDataset(IterableDataset):
 
 
 def train(config):
-    wandb.init({"entity": "brandonh", "project": "280-project", "config": {}})
 
     gpus = list(range(torch.cuda.device_count()))
-
-    dataset = AutoRegressiveDataset()
+    dataset = AutoRegressiveDataset(
+        batch_size=config["batch_size"], num_renders=config["num_renders"]
+    )
     model = BaselineCADGenerator(output_dim=config["vocab_size"]).cuda()
     if config["ckpt"] is not None:
         model.load_state_dict(
@@ -287,23 +308,26 @@ def train(config):
 
     step = config["restore_step"] if config["restore_step"] is not None else 0
 
+    wandb.init(**{"entity": "brandonh", "project": "280-project", "group": "debugging"})
     for i in tqdm(range(1, config["total_steps"] + 1)):
         for batch in dataloader:
             tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
-            # rolls = batch["rolls"].squeeze().cuda()  # (B,)
-            # elevations = batch["elevations"].squeeze().cuda()  # (B,)
+            rolls = batch["rolls"].squeeze().cuda()  # (B,)
+            elevations = batch["elevations"].squeeze().cuda()  # (B,)
             renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 224 x 224)
             optimizer.zero_grad()
-            outputs = model(renderings, tokenized_texts[:, :-1, :])
+            outputs = model(renderings, tokenized_texts[:, :-1, :], rolls, elevations)
             loss = criterion(outputs, tokenized_texts[:, 1:, :])
             loss.backward()
             optimizer.step()
 
             loss = loss.item()
-            wandb.log({"loss": loss}, step)
+            wandb.log({"loss/t": loss}, step)
 
             if step % config["eval_steps"] == 0:
-                evaluate(model)
+                model.eval()
+                evaluate(model, config, step)
+                model.train()
 
             if step % config["save_steps"] == 0:
                 torch.save(model.module.state_dict(), "model_weights.pth")
@@ -311,7 +335,7 @@ def train(config):
             step += 1
 
 
-def evaluate(model, config):
+def evaluate(model: BaselineCADGenerator, config: dict, step: int):
     dataset = AutoRegressiveDataset()
     dataloader = DataLoader(
         dataset,
@@ -320,9 +344,26 @@ def evaluate(model, config):
         num_workers=8,
         drop_last=True,
     )
+    criterion = nn.CrossEntropyLoss()
 
+    losses = []
+    for batch in dataloader:
+        tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
+        rolls = batch["rolls"].squeeze().cuda()  # (B,)
+        elevations = batch["elevations"].squeeze().cuda()  # (B,)
+        renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 224 x 224)
+        outputs = model(renderings, tokenized_texts[:, :-1, :], rolls, elevations)
+        loss = criterion(outputs, tokenized_texts[:, 1:, :])
+
+        loss = loss.item()
+        losses.append(loss)
+    loss = sum(losses) / len(losses)
+    wandb.log({"loss/eval_loss": loss}, step)
     return
 
 
 if __name__ == "__main__":
-    train()
+    config = yaml.safe_load(
+        open("/home/brandonh/treeCAD/src/config/default_config.yaml", "r")
+    )
+    train(config)
