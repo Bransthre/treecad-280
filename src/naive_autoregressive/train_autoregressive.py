@@ -14,9 +14,9 @@ import cadquery as cq
 from cadquery import *
 import matplotlib.pyplot as plt
 
-from .model_utils import RotaryPositionalEmbeddings
-from .no_interaction_vis import no_interact_show
-from .vocabularies import vocabularies
+from model_utils import RotaryPositionalEmbeddings
+from no_interaction_vis import no_interact_show
+from vocabularies import vocabularies
 from datrie import Trie
 
 import os
@@ -218,6 +218,12 @@ class AutoRegressiveDataset(IterableDataset):
         self.all_tokenized_texts = torch.Tensor(all_tokenized_texts)
         self.rolls_range = torch.arange(-180, 180, 18)
         self.elevations_range = torch.arange(-90, 90, 9)
+        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
+        self.current_index = 0
+
+    def shuffle(self):
+        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
+        self.current_index = 0
 
     def _produce_batch(self):
         """
@@ -233,11 +239,11 @@ class AutoRegressiveDataset(IterableDataset):
         )
         rolls = self.rolls_range[random_angles[:, :, 0]]
         elevations = self.elevations_range[random_angles[:, :, 1]]
-        random_cad_indices = torch.randint(
-            low=0,
-            high=len(self.all_tokenized_texts),
-            size=(self.batch_size,),
-        )
+        random_cad_indices = self.random_cad_indices[
+            self.current_index : self.current_index + self.batch_size
+        ]
+        self.current_index += self.batch_size
+
         renderings = []
         for i in range(self.batch_size):
             renderings.append(
@@ -257,8 +263,20 @@ class AutoRegressiveDataset(IterableDataset):
         }
 
     def __iter__(self):
-        while True:
-            yield self._produce_batch()
+        self.shuffle()
+        all_batches = []
+        for i in tqdm(
+            range(0, len(self.all_tokenized_texts), self.batch_size),
+            desc="Producing batches",
+            leave=False,
+            total=len(self.all_tokenized_texts) // self.batch_size,
+        ):
+            batch = self._produce_batch()
+            all_batches.append(batch)
+        return iter(all_batches)
+
+    def __len__(self):
+        return len(self.all_tokenized_texts) // self.batch_size
 
 
 def train(config):
@@ -288,7 +306,12 @@ def train(config):
 
     wandb.init(**{"entity": "brandonh", "project": "280-project", "group": "debugging"})
     for i in tqdm(range(1, config["total_steps"] + 1)):
-        for batch in dataloader:
+        for batch_id, batch in tqdm(
+            enumerate(dataloader),
+            desc="Processing batches",
+            leave=False,
+            total=len(dataloader),
+        ):
             tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
             rolls = batch["rolls"].squeeze().cuda()  # (B,)
             elevations = batch["elevations"].squeeze().cuda()  # (B,)

@@ -22,6 +22,7 @@ from vtkmodules.vtkRenderingCore import (
 from vtkmodules.vtkCommonColor import vtkNamedColors
 from vtkmodules.vtkIOImage import vtkPNGWriter
 from vtkmodules.util import numpy_support
+from vtkmodules.vtkCommonCore import vtkLogger
 
 
 DEFAULT_COLOR = (1, 0.8, 0)
@@ -69,6 +70,7 @@ def no_interact_show(
     """
     Show CQ objects using VTK. This functions optionally allows to make screenshots.
     """
+    vtkLogger.SetStderrVerbosity(vtkLogger.VERBOSITY_OFF)
 
     # split objects
     shapes, vecs, locs, props = _split_showables(objs)
