@@ -35,7 +35,6 @@ for example_id in [266, 366, 466]:
         for elevation in elevations:
             img = no_interact_show(
                 r,
-                screenshot=f"./img_debug/{example_id}-img_r{roll}_e{elevation}.png",
                 roll=roll,
                 elevation=elevation,
                 interact=False,
