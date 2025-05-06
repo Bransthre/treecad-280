@@ -155,6 +155,7 @@ def no_interact_show(
         renderer.ResetCamera()
 
     # show and return
+    win.SetSize(128, 128)
     win.Render()
 
     # make a screenshot

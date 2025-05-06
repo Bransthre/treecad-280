@@ -180,7 +180,7 @@ class AutoRegressiveDataset(IterableDataset):
 
         if train:
             dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
-            batch_ids = [f"0{i}" for i in range(2)]  # + list(range(10, 100))
+            batch_ids = [f"0{i}" for i in range(1)]  # + list(range(10, 100))
             for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
                 batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
 
