@@ -1,5 +1,7 @@
-lr: 3e-4
+lr: 0.0003
 batch_size: 64
 vocab_size: 53
 num_renders: 10
-ckpt: None
+ckpt: null
+restore_step: null
+total_steps: 100000

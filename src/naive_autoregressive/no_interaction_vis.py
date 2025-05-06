@@ -21,6 +21,7 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkCommonColor import vtkNamedColors
 from vtkmodules.vtkIOImage import vtkPNGWriter
+from vtkmodules.util import numpy_support
 
 
 DEFAULT_COLOR = (1, 0.8, 0)
@@ -155,21 +156,17 @@ def no_interact_show(
     win.Render()
 
     # make a screenshot
-    if screenshot:
-        win2image = vtkWindowToImageFilter()
-        win2image.SetInput(win)
-        win2image.SetInputBufferTypeToRGB()
-        win2image.ReadFrontBufferOff()
-        win2image.Update()
-
-        writer = vtkPNGWriter()
-        writer.SetFileName(screenshot)
-        writer.SetInputConnection(win2image.GetOutputPort())
-        writer.Write()
+    win2image = vtkWindowToImageFilter()
+    win2image.SetInput(win)
+    win2image.SetInputBufferTypeToRGB()
+    win2image.ReadFrontBufferOff()
+    win2image.Update()
+    image_data = win2image.GetOutput()
+    image = numpy_support.vtk_to_numpy(image_data.GetPointData().GetScalars())
+    image_arr = image.reshape(image_data.GetDimensions()[:-1] + (3,))
 
     # clean up
     win2image.SetInput(None)
-    writer.SetInputConnection(None)
 
     renderer.RemoveActor(pts)
     renderer.RemoveActor(axs)
@@ -184,4 +181,5 @@ def no_interact_show(
 
     del win, axes, camera
     del (renderer, pts, axs, props)
-    del win2image, writer
+    del win2image
+    return image_arr

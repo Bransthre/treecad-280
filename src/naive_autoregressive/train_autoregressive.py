@@ -14,9 +14,9 @@ import cadquery as cq
 from cadquery import *
 import matplotlib.pyplot as plt
 
-from model_utils import RotaryPositionalEmbeddings
-from no_interaction_vis import no_interact_show
-from vocabularies import vocabularies
+from .model_utils import RotaryPositionalEmbeddings
+from .no_interaction_vis import no_interact_show
+from .vocabularies import vocabularies
 from datrie import Trie
 
 import os
@@ -143,44 +143,22 @@ class BaselineCADGenerator(nn.Module):
 
 
 def render_cadquery_code(cadquery_code, rolls, elevations):
-    """
-    1. Set up tempfiles
-    2. Execute the cadquery code
-    3. Render the cadquery code
-    4. Return the rendered images
-    """
-    num_renders = rolls.shape[0]
     # Create a temporary directory to store the images
     temp_dir = os.path.join(os.getcwd(), "temp_renderings")
     os.makedirs(temp_dir, exist_ok=True)
 
     cq_namespace = {"r": None}
     exec("import cadquery as cq;" + cadquery_code, cq_namespace)
+    images = []
     for img_idx, (roll, elevation) in enumerate(zip(rolls, elevations)):
-        no_interact_show(
+        img = no_interact_show(
             cq_namespace["r"],
-            screenshot=os.path.join(temp_dir, f"img_{img_idx}.png"),
             roll=roll,
             elevation=elevation,
             interact=False,
         )
+        images.append(img / 256)
 
-    # Load the images from the temporary directory
-    images = []
-    for img_idx in range(num_renders):
-        img_path = os.path.join(temp_dir, f"img_{img_idx}.png")
-        if os.path.exists(img_path):
-            img = plt.imread(img_path)
-            images.append(img)
-        else:
-            print(f"Image {img_path} does not exist.")
-
-    # Clean up the temporary directory
-    for img_idx in range(num_renders):
-        img_path = os.path.join(temp_dir, f"img_{img_idx}.png")
-        if os.path.exists(img_path):
-            os.remove(img_path)
-    os.rmdir(temp_dir)
     return images
 
 
@@ -202,7 +180,7 @@ class AutoRegressiveDataset(IterableDataset):
 
         if train:
             dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
-            batch_ids = [f"0{i}" for i in range(5)]  # + list(range(10, 100))
+            batch_ids = [f"0{i}" for i in range(2)]  # + list(range(10, 100))
             for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
                 batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
 
@@ -298,12 +276,12 @@ def train(config):
     dataloader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
-        shuffle=True,
+        # shuffle=True,
         num_workers=8,
         drop_last=True,
     )
 
-    optimizer = torch.optim.Adam(lr=config["lr"])
+    optimizer = torch.optim.Adam(lr=config["lr"], params=model.parameters())
     criterion = nn.CrossEntropyLoss()
 
     step = config["restore_step"] if config["restore_step"] is not None else 0
