@@ -3,3 +3,5 @@
 *.json
 *.pyc
 wandb*
+img_debug/
+cad-recode-v1.5/
