@@ -5,3 +5,5 @@
 wandb*
 img_debug/
 cad-recode-v1.5/
+cadquery/
+datasets/
