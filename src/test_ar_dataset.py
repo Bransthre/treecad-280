@@ -1,10 +1,10 @@
-from naive_autoregressive.train_autoregressive import AutoRegressiveDataset
+from naive_autoregressive.dataset import AutoRegressiveDataset
+import matplotlib.pyplot as plt
 
 dataset = AutoRegressiveDataset(batch_size=4, num_renders=10)
 batch = dataset._produce_batch()
 print({k: v.shape for k, v in batch.items()})
 
-import matplotlib.pyplot as plt
 
 plt.imsave(
     "test_ar_dataset.png",

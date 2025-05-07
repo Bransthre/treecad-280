@@ -9,8 +9,8 @@ from cadquery import *
 import matplotlib.pyplot as plt
 
 from datrie import Trie
-from no_interaction_vis import no_interact_show
-from vocabularies import vocabularies
+from .no_interaction_vis import no_interact_show
+from .vocabularies import vocabularies
 
 import os
 from tqdm import tqdm
@@ -92,7 +92,7 @@ class AutoRegressiveDataset(IterableDataset):
         all_tokenized_texts = []
 
         if train:
-            text_dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
+            text_dataset_dir = "/home/brandonh/datasets/cad-recode-v1.5/train/"
             batch_ids = [f"0{i}" for i in range(1)]  # + list(range(10, 100))
             for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
                 batch_dir = os.path.join(text_dataset_dir, f"batch_{batch_id}")
@@ -122,16 +122,10 @@ class AutoRegressiveDataset(IterableDataset):
                 desc="Processing batches",
                 leave=False,
             ):
-                batch_dir = os.path.join(img_dataset_dir, zipped_imgs_name)
-                # Check if the directory exists
-                for _, file_name in tqdm(
-                    enumerate(os.listdir(batch_dir)),
-                    desc=f"Processing files in {batch_dir}",
-                ):
-                    file_path = os.path.join(batch_dir, file_name)
-                    with open(file_path, "r") as fp:
-                        images = np.load(fp)  # (100, 8, 128, 128, 3)
-                        all_imgs.append(images)
+                file_path = os.path.join(img_dataset_dir, zipped_imgs_name)
+                with open(file_path, "rb") as fp:
+                    images = np.load(fp)  # (100, 8, 128, 128, 3)
+                    all_imgs.append(images)
             all_imgs = np.concatenate(all_imgs, axis=0) / 256
 
         else:
@@ -188,33 +182,20 @@ class AutoRegressiveDataset(IterableDataset):
         1. No-interaction rendering at randomly sampled angles
         2. Process stuff and return
         """
-        random_angles = torch.randint(
-            low=0,
-            high=20,
-            size=(self.batch_size, self.num_renders, 2),
-        )
-        rolls = self.rolls_range[random_angles[:, :, 0]]
-        elevations = self.elevations_range[random_angles[:, :, 1]]
+        rolls = torch.zeros((self.batch_size, self.num_renders))
+        elevations = torch.zeros((self.batch_size, self.num_renders))
         random_cad_indices = self.random_cad_indices[
+            self.current_index : self.current_index + self.batch_size
+        ]
+        renderings = self.all_imgs[
             self.current_index : self.current_index + self.batch_size
         ]
         self.current_index += self.batch_size
 
-        renderings = []
-        for i in range(self.batch_size):
-            renderings.append(
-                render_cadquery_code(
-                    self.all_cad_code[random_cad_indices[i]],
-                    rolls[i],
-                    elevations[i],
-                )
-            )
-        renderings = torch.Tensor(np.array(renderings))  # (B x k x 3 x 128 x 128)
-
         return {
             "tokenized_texts": self.all_tokenized_texts[random_cad_indices],
-            "rolls": random_angles[:, :, 0],
-            "elevations": random_angles[:, :, 1],
+            "rolls": rolls,
+            "elevations": elevations,
             "renderings": renderings,
         }
 

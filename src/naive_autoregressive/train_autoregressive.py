@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from model_utils import RotaryPositionalEmbeddings
 from no_interaction_vis import no_interact_show
 from vocabularies import vocabularies
-from dataset import AutoRegressiveDataset
+from dataset import AutoRegressiveDataset, Tokenizer
 
 import os
 import yaml
