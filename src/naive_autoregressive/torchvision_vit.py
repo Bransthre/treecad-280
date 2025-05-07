@@ -338,13 +338,14 @@ class VisionTransformer(nn.Module):
         x = torch.cat([batch_class_token, x], dim=1)
 
         x = self.encoder(x)
+        return x
 
         # Classifier "token" as used by standard language architectures
-        x = x[:, 0]
+        # x = x[:, 0]
 
-        x = self.heads(x)
+        # x = self.heads(x)
 
-        return x
+        # return x
 
 
 def _vision_transformer(

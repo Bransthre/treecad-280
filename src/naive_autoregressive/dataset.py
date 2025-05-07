@@ -9,8 +9,8 @@ from cadquery import *
 import matplotlib.pyplot as plt
 
 from datrie import Trie
-from .no_interaction_vis import no_interact_show
-from .vocabularies import vocabularies
+from no_interaction_vis import no_interact_show
+from vocabularies import vocabularies
 
 import os
 from tqdm import tqdm
@@ -59,13 +59,8 @@ class Tokenizer:
             if match:
                 token_indices.append(self._token_to_index[match])
                 current_expr = current_expr[len(match) :]
-        token_indices = (
-            [self._sos_token]
-            + token_indices
-            + [self._eos_token]
-            + [self._pad_token] * (self._max_sequence_length - len(token_indices) - 2)
-        )
-        return token_indices
+        token_indices = [self._sos_token] + token_indices + [self._eos_token]
+        return torch.Tensor(token_indices)
 
     def detokenize(self, token_indices):
         tokens = [
@@ -73,152 +68,6 @@ class Tokenizer:
             for token_id in token_indices
         ]
         return "".join(tokens)
-
-
-class AutoRegressiveDataset(IterableDataset):
-    def __init__(self, batch_size, num_renders, train=True):
-        """
-        1. Set up the attributes
-        2. Initialize the tokenizer
-        3. Get the content of all files in cad-recode v1.5 dataset
-        4. Tokenize those contents
-        """
-        self.batch_size = batch_size
-        self.num_renders = num_renders
-        self.tokenizer = Tokenizer(vocabularies)
-
-        # Get content of all files in cad-recode v1.5 dataset
-        all_cad_code = []
-        all_tokenized_texts = []
-
-        if train:
-            text_dataset_dir = "/home/brandonh/datasets/cad-recode-v1.5/train/"
-            batch_ids = [f"0{i}" for i in range(1)]  # + list(range(10, 100))
-            for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
-                batch_dir = os.path.join(text_dataset_dir, f"batch_{batch_id}")
-
-                # Check if the directory exists
-                for _, file_name in tqdm(
-                    enumerate(os.listdir(batch_dir)),
-                    desc=f"Processing CAD files in {batch_dir}",
-                    leave=False,
-                ):
-                    file_path = os.path.join(batch_dir, file_name)
-                    if os.path.isfile(file_path):
-                        with open(file_path, "r") as file:
-                            contents = "".join(
-                                [s.replace("\n", ";") for s in file.readlines()[1:]]
-                            )
-                            all_cad_code.append(contents)
-                            all_tokenized_texts.append(
-                                self.tokenizer.tokenize(contents)
-                            )
-
-            img_dataset_dir = (
-                "/home/vint/treecad-280/datasets/cad-recode-render-v1/train"
-            )
-            all_imgs = []
-            all_img_directories = os.listdir(img_dataset_dir)
-            for file_idx in tqdm(
-                range(len(all_img_directories)),
-                desc="Processing images",
-                leave=False,
-            ):
-                zipped_imgs_name = all_img_directories[file_idx]
-                file_path = os.path.join(img_dataset_dir, zipped_imgs_name)
-                with open(file_path, "rb") as fp:
-                    images = np.load(fp)  # (100, 8, 128, 128, 3)
-                    all_imgs.append(images)
-            all_imgs = np.concatenate(all_imgs, axis=0) / 256
-
-        else:
-            text_dataset_dir = "/home/brandonh/cad-recode-v1.5/val/"
-            for _, file_name in tqdm(
-                enumerate(os.listdir(text_dataset_dir)),
-                desc=f"Processing batches",
-                leave=False,
-            ):
-                file_path = os.path.join(text_dataset_dir, file_name)
-                if os.path.isfile(file_path):
-                    with open(file_path, "r") as file:
-                        contents = "".join(
-                            [s.replace("\n", ";") for s in file.readlines()[1:]]
-                        )
-                        all_cad_code.append(contents)
-                        all_tokenized_texts.append(self.tokenizer.tokenize(contents))
-
-            img_dataset_dir = "/home/vint/treecad-280/datasets/cad-recode-render-v1/val"
-            all_imgs = []
-            for batch_id, zipped_imgs_name in tqdm(
-                enumerate(os.listdir(img_dataset_dir)),
-                desc="Processing batches",
-                leave=False,
-            ):
-                batch_dir = os.path.join(img_dataset_dir, zipped_imgs_name)
-                # Check if the directory exists
-                for _, file_name in tqdm(
-                    enumerate(os.listdir(batch_dir)),
-                    desc=f"Processing files in {batch_dir}",
-                ):
-                    file_path = os.path.join(batch_dir, file_name)
-                    with open(file_path, "r") as fp:
-                        images = np.load(fp)  # (100, 8, 128, 128, 3)
-                        all_imgs.append(images)
-            all_imgs = np.concatenate(all_imgs, axis=0) / 256
-
-        self.all_cad_code = all_cad_code
-        self.all_tokenized_texts = torch.Tensor(all_tokenized_texts)
-        self.rolls_range = torch.arange(-180, 180, 18)
-        self.elevations_range = torch.arange(-90, 90, 9)
-        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
-        self.current_index = 0
-        self.all_imgs = torch.Tensor(all_imgs)
-
-    def shuffle(self):
-        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
-        self.current_index = 0
-
-    def _produce_batch(self):
-        """
-        Signature heavily references the formality of the tree diffusion training
-        script (tree-diffusion/scripts/train.py)
-        1. No-interaction rendering at randomly sampled angles
-        2. Process stuff and return
-        """
-        rolls = torch.zeros((self.batch_size, self.num_renders))
-        elevations = torch.zeros((self.batch_size, self.num_renders))
-        random_cad_indices = self.random_cad_indices[
-            self.current_index : self.current_index + self.batch_size
-        ]
-        renderings = self.all_imgs[
-            self.current_index : self.current_index + self.batch_size
-        ]
-        self.current_index += self.batch_size
-
-        return {
-            "tokenized_texts": self.all_tokenized_texts[random_cad_indices],
-            "rolls": rolls,
-            "elevations": elevations,
-            "renderings": renderings,
-        }
-
-    def __iter__(self):
-        self.shuffle()
-        all_batches = []
-        for i in tqdm(
-            # range(0, len(self.all_tokenized_texts), self.batch_size),
-            range(150),
-            desc="Producing batches",
-            leave=False,
-            total=2,  # len(self.all_tokenized_texts) // self.batch_size,
-        ):
-            batch = self._produce_batch()
-            all_batches.append(batch)
-        return iter(all_batches)
-
-    def __len__(self):
-        return 150
-        # return len(self.all_tokenized_texts) // self.batch_size
 
 
 class CADImageDataset(Dataset):
@@ -266,7 +115,7 @@ class CADImageDataset(Dataset):
                         "img_idx_in_file": in_file_index,
                         "text_path": os.path.join(
                             text_dataset_dir,
-                            f"batch_{batch_idx}/{cad_index % 10000}.py",
+                            f"batch_{batch_idx}/{cad_index}.py",
                         ),
                     }
         self.all_data_indices = all_data_indices
@@ -281,32 +130,46 @@ class CADImageDataset(Dataset):
         text_path = data["text_path"]
         img_idx_in_file = data["img_idx_in_file"]
 
-        with open(img_path, "rb") as fp:
-            images = np.load(fp)[img_idx_in_file]
-        with open(rolls_path, "rb") as fp:
-            rolls = np.load(fp)[img_idx_in_file]
-        with open(elevations_path, "rb") as fp:
-            elevations = np.load(fp)[img_idx_in_file]
+        images = torch.tensor(np.load(img_path, mmap_mode="r")[img_idx_in_file])
+        rolls = torch.tensor(np.load(rolls_path, mmap_mode="r")[img_idx_in_file])
+        elevations = torch.tensor(
+            np.load(elevations_path, mmap_mode="r")[img_idx_in_file]
+        )
         with open(text_path, "r") as fp:
             cad_code = "".join([s.replace("\n", ";") for s in fp.readlines()[1:]])
             tokenized_cad_code = self.tokenizer.tokenize(cad_code)
         return (images, rolls, elevations, tokenized_cad_code)
 
     def __len__(self):
-        return len(self.all_data_indices_key)
+        return 64 * 100
+        # return len(self.all_data_indices_key)
 
 
 def collate_fn(batch):
     images, rolls, elevations, tokenized_cad_code = zip(*batch)
-    images = torch.stack([torch.Tensor(img) for img in images]) / 255
-    rolls = torch.stack([torch.Tensor(roll) for roll in rolls])
-    elevations = torch.stack([torch.Tensor(elev) for elev in elevations])
-    tokenized_cad_code = torch.stack(
-        [torch.Tensor(code).long() for code in tokenized_cad_code]
-    )
+    images = torch.stack(images) / 255
+    rolls = torch.stack(rolls)
+    elevations = torch.stack(elevations)
+    decoder_inputs = [code[:-1] for code in tokenized_cad_code]
+    targets = [code[1:] for code in tokenized_cad_code]
+    decoder_inputs = nn.utils.rnn.pad_sequence(
+        decoder_inputs, batch_first=True, padding_value=0
+    ).long()
+    targets = nn.utils.rnn.pad_sequence(
+        targets, batch_first=True, padding_value=0
+    ).long()  # Use -100 for ignored loss
+    attention_masks = decoder_inputs == 0
+    for i, mask in enumerate(attention_masks):
+        if not mask.any():
+            attention_masks[i, 0] = True
+        if mask.all():
+            attention_masks[i, 0] = False
+
     return {
-        "images": images,
-        "rolls": rolls,
-        "elevations": elevations,
-        "tokenized_cad_code": tokenized_cad_code,
+        "renderings": images.float(),
+        "rolls": rolls.float(),
+        "elevations": elevations.float(),
+        "decoder_inputs": decoder_inputs,
+        "targets": targets,
+        "attention_masks": attention_masks,
     }
