@@ -7,17 +7,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from torchvision import models
+from torchvision_vit import VisionTransformer, Encoder
 
 
 import cadquery as cq
 from cadquery import *
 import matplotlib.pyplot as plt
 
-from model_utils import RotaryPositionalEmbeddings
 from no_interaction_vis import no_interact_show
 from vocabularies import vocabularies
-from datrie import Trie
+from dataset import CADImageDataset, Tokenizer, collate_fn
 
 import os
 import yaml
@@ -33,62 +32,48 @@ flags.DEFINE_float("flt", 0.0, "")
 flags.DEFINE_integer("batch_size", 512, "batch size")
 
 
-class Tokenizer:
-    def __init__(self, vocabularies):
-        self._vocabulary = ["<PAD>", "<SOS>", "<EOS>"] + vocabularies
-        self._token_to_index = {token: i for i, token in enumerate(self._vocabulary)}
-        self._index_to_token = {i: token for i, token in enumerate(self._vocabulary)}
-        self._pad_token = self._token_to_index["<PAD>"]
-        self._sos_token = self._token_to_index["<SOS>"]
-        self._eos_token = self._token_to_index["<EOS>"]
-        self._vocabulary_size = len(self._vocabulary)
-        self._vocabulary_set = set(self._vocabulary)
+class RotaryPositionalEmbeddings(nn.Module):
+    def __init__(self, d):
+        super().__init__()
+        # Generate frequencies
+        num_repeats = d // 32
+        inv_freq = 1.0 / (2 ** (torch.arange(0, 32, 2).float() / 32))
+        inv_freq = inv_freq.repeat_interleave(num_repeats)
+        self.register_buffer("inv_freq", inv_freq)
 
-        self._max_token_length = max(len(token) for token in self._vocabulary)
-        self._max_sequence_length = 512
+    def forward(self, x, seq_len_dim):
+        seq_len = x.size(seq_len_dim)
+        pos = torch.arange(seq_len, dtype=torch.float, device=x.device)
+        sinusoid_inp = torch.einsum("i , j -> ij", pos, self.inv_freq)
+        emb = torch.cat((sinusoid_inp.sin(), sinusoid_inp.cos()), dim=-1)
 
-        self._characters = sorted(list(set("".join(self._vocabulary))))
-        self._trie = Trie(self._characters)
-        for token, index in self._token_to_index.items():
-            self._trie[token] = index
+        # Expand for batch and sequence length
+        emb = emb.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, hidden_dim)
 
-    def tokenize(self, current_expr):
-        token_indices = []
-        while current_expr:
-            match = self._trie.longest_prefix(current_expr)
-            if match:
-                token_indices.append(self._token_to_index[match])
-                current_expr = current_expr[len(match) :]
-        token_indices = (
-            [self._sos_token]
-            + token_indices
-            + [self._eos_token]
-            + [self._pad_token] * (self._max_sequence_length - len(token_indices) - 2)
-        )
-        return token_indices
-
-    def detokenize(self, token_indices):
-        tokens = [
-            self._index_to_token.get(token_id, self._pad_token)
-            for token_id in token_indices
-        ]
-        return "".join(tokens)
+        return (x * emb) + (x.flip(dims=[-1]) * emb)
 
 
 class RollElevationEmbedding(nn.Module):
     def __init__(self, d_model):
         super().__init__()
         self.d_model = d_model
-        self.roll_embedding = nn.Embedding(20, d_model)
-        self.elevation_embedding = nn.Embedding(20, d_model)
 
     def forward(self, roll_idxs, elevation_idxs):
-        # Alternative iis to just use sinusoidal embeddings.
-        roll_ohe = torch.nn.functional.one_hot(roll_idxs, num_classes=20)
-        elevation_ohe = torch.nn.functional.one_hot(elevation_idxs, num_classes=20)
-        roll_embedding = self.roll_embedding(roll_ohe)
-        elevation_embedding = self.elevation_embedding(elevation_ohe)
-        return torch.cat((roll_embedding, elevation_embedding), dim=-1)
+        high_dims_mults = torch.arange(
+            0, self.d_model // 2, dtype=torch.float, device=roll_idxs.device
+        )
+        roll_idxs_expansion = roll_idxs[..., None] * high_dims_mults.repeat(
+            (roll_idxs.shape[0], roll_idxs.shape[1], 1)
+        )
+        elevation_idxs_expansion = elevation_idxs[..., None] * high_dims_mults.repeat(
+            (elevation_idxs.shape[0], elevation_idxs.shape[1], 1)
+        )
+        roll_idxs_expansion = torch.sin(roll_idxs_expansion)
+        elevation_idxs_expansion = torch.cos(elevation_idxs_expansion)
+        roll_elevation_embeddings = torch.cat(
+            (roll_idxs_expansion, elevation_idxs_expansion), dim=-1
+        )  # (B, d_model)
+        return roll_elevation_embeddings
 
 
 class BaselineCADGenerator(nn.Module):
@@ -99,54 +84,96 @@ class BaselineCADGenerator(nn.Module):
 
     def __init__(self, output_dim):
         super().__init__()
-        self.encoder = models.VisionTransformer(
-            image_size=224,
+        self.encoder = VisionTransformer(
+            image_size=128,
             patch_size=16,
-            num_classes=output_dim,
-            num_layers=12,
-            num_heads=12,
-            hidden_dim=768,
-            mlp_dim=3072,
+            num_layers=8,
+            num_heads=8,
+            hidden_dim=512,
+            mlp_dim=2048,
+            in_channels=3,
         )  # I don't know if this is the right parameters but here we go.
+        self.rope_embedding = RotaryPositionalEmbeddings(d=512)
         self.tokenizer = Tokenizer(vocabularies)
         self.token_embedding = nn.Embedding(len(self.tokenizer._vocabulary), 768)
         self.roll_elevation_embedding = RollElevationEmbedding(256)
         self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d_model=1024, nhead=8, batch_first=True),
+            nn.TransformerDecoderLayer(
+                d_model=768, nhead=8, batch_first=True
+            ),  # batch_first is True automatically
             num_layers=6,
         )
-        self.output_dim = output_dim
+        self.out_logits = nn.Linear(768, output_dim)
 
-    def forward(self, renderings, tokenized, roll_idxs, elevation_idxs):
+    def forward(self, renderings, tokenized, roll_idxs, elevation_idxs, tgt_mask):
         """
         A few arbitrary design decisions, which are all heavily dependent on
         (tree-diffusion/td/learning/gpt.py).
 
         (1) We will concatenate (meaning 3k channels) the k provided renderings.
         They should probably accompany some angular positional embedding here.
-        Assume input `renderings` is B x k x C x 224 x 224
+        Assume input `renderings` is B x k x C x 128 x 128
         """
-        concat_img_repr = torch.cat(renderings, dim=1)  # B x kC x 224 x 224
-        concat_img_repr = concat_img_repr * 2 - 1
-        # concat_img_repr = self.rope_embedding(concat_img_repr)
-        image_embeddings = self.encoder(concat_img_repr)  # Normalize to [-1, 1]
-        image_embeddings = image_embeddings.unsqueeze(1)
+        renderings = renderings.permute(0, 1, 4, 2, 3) * 2 - 1
+        image_embeddings = self.encoder(
+            renderings.reshape(-1, 3, 128, 128)
+        )  # B x k x 768 x 128
+        image_embeddings = self.rope_embedding(image_embeddings[None], 2)
         decoder_input = self.token_embedding(tokenized)
         roll_elevation_embeddings = self.roll_elevation_embedding(
             roll_idxs, elevation_idxs
         )
+        image_embeddings = image_embeddings.reshape(-1, image_embeddings.shape[-2], 512)
+        roll_elevation_embeddings = (
+            roll_elevation_embeddings[:, :, None, :]
+            .repeat((1, 1, image_embeddings.shape[-2], 1))
+            .reshape(-1, image_embeddings.shape[-2], 256)
+        )
         visual_embeddings = torch.cat(
             (image_embeddings, roll_elevation_embeddings), dim=-1
-        )  # B x k x (768 + 256)
-        decoder_output_logits = self.decoder(decoder_input, visual_embeddings)
+        ).permute(
+            1, 0, 2
+        )  # B x T x (768 + 256)
+        visual_embeddings = visual_embeddings.reshape(
+            renderings.shape[0], renderings.shape[1], -1, 768
+        ).mean(dim=1)
+        subsequent_mask = torch.triu(
+            torch.full(
+                (decoder_input.shape[1], decoder_input.shape[1]),
+                float("-inf"),
+                device=decoder_input.device,
+            ),
+            diagonal=1,
+        )
+        visual_embeddings = visual_embeddings.repeat(
+            1, decoder_input.shape[1] // visual_embeddings.shape[1] + 1, 1
+        )
+        visual_embeddings = visual_embeddings[:, : decoder_input.shape[1], :]
+
+        # print(f"There are {decoder_input.isnan().sum()} NaNs in the decoder input")
+        # print(
+        #     f"There are {visual_embeddings.isnan().sum()} NaNs in the visual embeddings"
+        # )
+        # print(f"There are {subsequent_mask.isnan().sum()} NaNs in the subsequent mask")
+        # print(f"There are {tgt_mask.isnan().sum()} NaNs in the tgt mask")
+
+        # print(f"The shape of decoder_input is {decoder_input.shape}")
+        # print(f"The shape of visual_embeddings is {visual_embeddings.shape}")
+        # print(f"The shape of subsequent_mask is {subsequent_mask.shape}")
+        # print(f"The shape of tgt_mask is {tgt_mask.shape}")
+
+        decoder_output = self.decoder(
+            decoder_input,
+            visual_embeddings,
+            # tgt_mask=subsequent_mask,
+            tgt_key_padding_mask=tgt_mask,
+        )
+        decoder_output_logits = self.out_logits(decoder_output)
         return decoder_output_logits
 
 
 def render_cadquery_code(cadquery_code, rolls, elevations):
     # Create a temporary directory to store the images
-    temp_dir = os.path.join(os.getcwd(), "temp_renderings")
-    os.makedirs(temp_dir, exist_ok=True)
-
     cq_namespace = {"r": None}
     exec("import cadquery as cq;" + cadquery_code, cq_namespace)
     images = []
@@ -162,199 +189,240 @@ def render_cadquery_code(cadquery_code, rolls, elevations):
     return images
 
 
-class AutoRegressiveDataset(IterableDataset):
-    def __init__(self, batch_size, num_renders, train=True):
-        """
-        1. Set up the attributes
-        2. Initialize the tokenizer
-        3. Get the content of all files in cad-recode v1.5 dataset
-        4. Tokenize those contents
-        """
-        self.batch_size = batch_size
-        self.num_renders = num_renders
-        self.tokenizer = Tokenizer(vocabularies)
+def model_inference(
+    model: BaselineCADGenerator, renders, rolls, elevations, tgt_masks, tokenizer
+):
+    beam_size = 5
+    batch_size = renders.shape[0]
+    seq_len = 512
 
-        # Get content of all files in cad-recode v1.5 dataset
-        all_cad_code = []
-        all_tokenized_texts = []
+    # Initialize best sequence contexts with the start token for beam search
+    best_sequence_contexts = torch.full(
+        (beam_size, 1), tokenizer._sos_token, dtype=torch.long
+    ).cuda()  # (B, beam_size, 1)
 
-        if train:
-            dataset_dir = "/home/brandonh/cad-recode-v1.5/train/"
-            batch_ids = [f"0{i}" for i in range(1)]  # + list(range(10, 100))
-            for batch_id in tqdm(batch_ids, desc="Processing batches", leave=False):
-                batch_dir = os.path.join(dataset_dir, f"batch_{batch_id}")
+    # Initialize beam scores (log probabilities of sequences)
+    beam_scores = torch.zeros(beam_size).cuda()  # (B, beam_size)
+    renders_repeat = renders.repeat(
+        (beam_size, 1, 1, 1, 1)
+    )  # (B * beam_size, k, 3, 128, 128)
+    rolls_repeat = rolls.repeat(beam_size, 1)  # (B * beam_size,)
+    elevations_repeat = elevations.repeat(beam_size, 1)  # (B * beam_size,)
 
-                # Check if the directory exists
-                for _, file_name in tqdm(
-                    enumerate(os.listdir(batch_dir)),
-                    desc=f"Processing files in {batch_dir}",
-                ):
-                    file_path = os.path.join(batch_dir, file_name)
-                    if os.path.isfile(file_path):
-                        with open(file_path, "r") as file:
-                            contents = "".join(
-                                [s.replace("\n", ";") for s in file.readlines()[1:]]
-                            )
-                            all_cad_code.append(contents)
-                            all_tokenized_texts.append(
-                                self.tokenizer.tokenize(contents)
-                            )
-        else:
-            dataset_dir = "/home/brandonh/cad-recode-v1.5/val/"
-            for _, file_name in tqdm(
-                enumerate(os.listdir(dataset_dir)),
-                desc=f"Processing files in {dataset_dir}",
-            ):
-                file_path = os.path.join(dataset_dir, file_name)
-                if os.path.isfile(file_path):
-                    with open(file_path, "r") as file:
-                        contents = "".join(
-                            [s.replace("\n", ";") for s in file.readlines()[1:]]
-                        )
-                        all_cad_code.append(contents)
-                        all_tokenized_texts.append(self.tokenizer.tokenize(contents))
+    print("renders.shape", renders_repeat.shape)
+    print(
+        "tokenized_input",
+        best_sequence_contexts.reshape(-1, best_sequence_contexts.shape[-1]).shape,
+    )
+    print("rolls.shape", rolls_repeat.shape)
+    print("elevations.shape", elevations_repeat.shape)
 
-        self.all_cad_code = all_cad_code
-        self.all_tokenized_texts = torch.Tensor(all_tokenized_texts)
-        self.rolls_range = torch.arange(-180, 180, 18)
-        self.elevations_range = torch.arange(-90, 90, 9)
-        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
-        self.current_index = 0
+    for i in range(seq_len):
+        print("best_sequence_contexts.shape", best_sequence_contexts.shape)
+        padding_mask = torch.zeros((beam_size, best_sequence_contexts.shape[-1])).cuda()
 
-    def shuffle(self):
-        self.random_cad_indices = torch.randperm(len(self.all_tokenized_texts))
-        self.current_index = 0
+        # Forward pass with current best sequences
+        next_token_logits = model(
+            renders_repeat,
+            best_sequence_contexts,
+            rolls_repeat,
+            elevations_repeat,
+            padding_mask,
+        )  # Reshape to (B, beam_size, vocab_size)
 
-    def _produce_batch(self):
-        """
-        Signature heavily references the formality of the tree diffusion training
-        script (tree-diffusion/scripts/train.py)
-        1. No-interaction rendering at randomly sampled angles
-        2. Process stuff and return
-        """
-        random_angles = torch.randint(
-            low=0,
-            high=20,
-            size=(self.batch_size, self.num_renders, 2),
+        # Apply beam search: get the top `beam_size` token indices
+        print("L236 next_token_logits.shape", next_token_logits.shape)
+        next_token_logits = next_token_logits[
+            :, :, :-1
+        ]  # Remove unwanted dimension (vocab size) if needed
+        print("L240 next_token_logits.shape", next_token_logits.shape)
+        log_probs = torch.log_softmax(next_token_logits, dim=-1)  # Log probabilities
+        print("log_probs.shape", log_probs.shape)
+
+        # Compute total log probability scores for beam search
+        beam_scores = (
+            beam_scores.unsqueeze(-1) + log_probs
+        )  # (B, beam_size, vocab_size)
+
+        # Select top `beam_size` from each batch
+        print("beam_scores:", beam_scores.shape)
+        top_scores, top_indices = torch.topk(beam_scores.view(-1), beam_size, dim=-1)
+
+        # Extract the corresponding batch and beam indices
+        beam_idx = top_indices // tokenizer._vocabulary_size  # Get the batch index
+        token_idx = top_indices % tokenizer._vocabulary_size  # Get the token index
+
+        # Update the sequences
+        best_sequence_contexts = torch.cat(
+            [
+                best_sequence_contexts[beam_idx],
+                token_idx.unsqueeze(-1),
+            ],
+            dim=-1,
         )
-        rolls = self.rolls_range[random_angles[:, :, 0]]
-        elevations = self.elevations_range[random_angles[:, :, 1]]
-        random_cad_indices = self.random_cad_indices[
-            self.current_index : self.current_index + self.batch_size
-        ]
-        self.current_index += self.batch_size
 
-        renderings = []
-        for i in range(self.batch_size):
-            renderings.append(
-                render_cadquery_code(
-                    self.all_cad_code[random_cad_indices[i]],
-                    rolls[i],
-                    elevations[i],
-                )
-            )
-        renderings = torch.Tensor(np.array(renderings))  # (B x k x 3 x 224 x 224)
+        # Update the scores
+        beam_scores = top_scores
 
-        return {
-            "tokenized_texts": self.all_tokenized_texts[random_cad_indices],
-            "rolls": random_angles[:, :, 0],
-            "elevations": random_angles[:, :, 1],
-            "renderings": renderings,
-        }
+        # Print shapes for debugging
+        print("best_sequence_contexts.shape", best_sequence_contexts.shape)
+        print("beam_scores.shape", beam_scores.shape)
 
-    def __iter__(self):
-        self.shuffle()
-        all_batches = []
-        for i in tqdm(
-            range(0, len(self.all_tokenized_texts), self.batch_size),
-            desc="Producing batches",
-            leave=False,
-            total=len(self.all_tokenized_texts) // self.batch_size,
-        ):
-            batch = self._produce_batch()
-            all_batches.append(batch)
-        return iter(all_batches)
-
-    def __len__(self):
-        return len(self.all_tokenized_texts) // self.batch_size
+    # Convert to list of decoded tokens
+    best_sequence_contexts = best_sequence_contexts.squeeze().cpu().numpy()  # (B, T)
+    decoded_texts = []
+    for i in range(best_sequence_contexts.shape[0]):
+        decoded_texts.append(
+            [
+                tokenizer._index_to_token.get(token_id, tokenizer._pad_token)
+                for token_id in best_sequence_contexts[i]
+            ]
+        )
+    decoded_texts = ["".join(decoded_text) for decoded_text in decoded_texts]
+    return decoded_texts
 
 
 def train(config):
 
-    gpus = list(range(torch.cuda.device_count()))
-    dataset = AutoRegressiveDataset(
-        batch_size=config["batch_size"], num_renders=config["num_renders"]
-    )
+    # gpus = list(range(torch.cuda.device_count()))
+    # print(gpus)
+    dataset = CADImageDataset()
     model = BaselineCADGenerator(output_dim=config["vocab_size"]).cuda()
     if config["ckpt"] is not None:
         model.load_state_dict(
             torch.load("model_weights.pth", map_location="cuda:0", weights_only=True)
         )
-    model = nn.DataParallel(model, gpus)
+    model = nn.DataParallel(model)
     dataloader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
-        # shuffle=True,
-        num_workers=8,
+        shuffle=True,
         drop_last=True,
+        collate_fn=collate_fn,
     )
 
     optimizer = torch.optim.Adam(lr=config["lr"], params=model.parameters())
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
 
     step = config["restore_step"] if config["restore_step"] is not None else 0
 
-    wandb.init(**{"entity": "brandonh", "project": "280-project", "group": "debugging"})
-    for i in tqdm(range(1, config["total_steps"] + 1)):
-        for batch_id, batch in tqdm(
-            enumerate(dataloader),
-            desc="Processing batches",
+    run = wandb.init(
+        **{"entity": "brandonh", "project": "280-project", "group": "debugging"}
+    )
+    for i in tqdm(range(1, config["total_steps"] + 1), desc="Training epochs..."):
+        within_step_batch_bar = tqdm(
+            range(len(dataloader)),
+            desc=f"Training batches...",
             leave=False,
             total=len(dataloader),
-        ):
-            tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
+        )
+        for batch in dataloader:
+            tokenized_inputs = batch["decoder_inputs"].cuda()  # (B, 512)
+            targets = batch["targets"].cuda()  # (B, 512)
+            tgt_masks = batch["attention_masks"].cuda()  # (B, 512)
             rolls = batch["rolls"].squeeze().cuda()  # (B,)
             elevations = batch["elevations"].squeeze().cuda()  # (B,)
-            renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 224 x 224)
+            renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 128 x 128)
             optimizer.zero_grad()
-            outputs = model(renderings, tokenized_texts[:, :-1, :], rolls, elevations)
-            loss = criterion(outputs, tokenized_texts[:, 1:, :])
+            outputs = model(renderings, tokenized_inputs, rolls, elevations, tgt_masks)
+
+            loss = criterion(
+                outputs.reshape(-1, config["vocab_size"]),
+                targets.reshape(-1),
+            )
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             loss = loss.item()
-            wandb.log({"loss/t": loss}, step)
+            wandb.log({"loss/train_loss": loss}, step)
 
             if step % config["eval_steps"] == 0:
                 model.eval()
-                evaluate(model, config, step)
+                evaluate(model, config, step, dataset.tokenizer)
                 model.train()
 
             if step % config["save_steps"] == 0:
-                torch.save(model.module.state_dict(), "model_weights.pth")
+                torch.save(
+                    model.module.state_dict(), f"model_weights_{run.name}_{step}.pth"
+                )
+            within_step_batch_bar.update(1)
 
             step += 1
+        within_step_batch_bar.close()
 
 
-def evaluate(model: BaselineCADGenerator, config: dict, step: int):
-    dataset = AutoRegressiveDataset()
+def log_renders(images):
+    images_cl = [
+        np.transpose(img, (1, 2, 0)) for img in images[:8]
+    ]  # Ensure (128, 128, 3)
+
+    # Create a 4x2 subplot
+    fig, axes = plt.subplots(2, 4, figsize=(12, 6))
+    axes = axes.flatten()
+
+    for i, ax in enumerate(axes):
+        ax.imshow(np.clip(images_cl[i], 0, 1))  # Clip values to [0, 1] for safety
+        ax.axis("off")
+
+    plt.tight_layout()
+
+    # Log the figure to wandb
+    wandb.log({"image_grid": wandb.Image(fig)})
+
+    # Close the plot to avoid memory leaks in loops
+    plt.close(fig)
+
+
+def evaluate(
+    model: BaselineCADGenerator, config: dict, step: int, tokenizer: Tokenizer
+):
+    dataset = CADImageDataset()
     dataloader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
-        shuffle=False,
-        num_workers=8,
+        shuffle=True,
         drop_last=True,
+        collate_fn=collate_fn,
     )
     criterion = nn.CrossEntropyLoss()
 
+    sample_render = None
+
     losses = []
     for batch in dataloader:
-        tokenized_texts = batch["tokenized_texts"].cuda()  # (B, 512, d)
+        tokenized_inputs = batch["decoder_inputs"].cuda()  # (B, 512)
+        targets = batch["targets"].cuda()  # (B, 512)
+        tgt_masks = batch["attention_masks"].cuda()  # (B, 512)
         rolls = batch["rolls"].squeeze().cuda()  # (B,)
         elevations = batch["elevations"].squeeze().cuda()  # (B,)
-        renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 224 x 224)
-        outputs = model(renderings, tokenized_texts[:, :-1, :], rolls, elevations)
-        loss = criterion(outputs, tokenized_texts[:, 1:, :])
+        renderings = batch["renderings"].cuda()  # tensor (B x k x 3 x 128 x 128)
+
+        outputs = model(renderings, tokenized_inputs, rolls, elevations, tgt_masks)
+
+        # if sample_render is None:
+        #     with torch.no_grad():
+        #         cadquery_code = model_inference(
+        #             model,
+        #             renderings[0:1],
+        #             rolls[0:1],
+        #             elevations[0:1],
+        #             tgt_masks[0:1],
+        #             tokenizer,
+        #         )
+
+        #     images = render_cadquery_code(
+        #         cadquery_code[0],
+        #         rolls[0].unsqueeze(0),
+        #         elevations[0].unsqueeze(0),
+        #     )
+
+        #     log_renders(images)
+
+        loss = criterion(
+            outputs.reshape(-1, config["vocab_size"]),
+            targets.reshape(-1),
+        )
 
         loss = loss.item()
         losses.append(loss)

@@ -1,7 +1,9 @@
-lr: 0.0003
+lr: 0.00001
 batch_size: 64
-vocab_size: 53
+vocab_size: 56
 num_renders: 4
 ckpt: null
 restore_step: null
 total_steps: 100000
+eval_steps: 100
+save_steps: 1000
