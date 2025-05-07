@@ -36,7 +36,7 @@ def render_cad_data(cad_data, rolls, elevations):
         images.append(img)
     return images
 
-def main(dataset_dir, train_size, val_size, output_dir, images_per_cad=8, save_every=1000):
+def main(dataset_dir, train_size, val_size, output_dir, images_per_cad=8, save_every=100):
     """
     given dataset directory, size of training and validation split
     saves renders to output dir
@@ -80,7 +80,7 @@ def main(dataset_dir, train_size, val_size, output_dir, images_per_cad=8, save_e
 if __name__=="__main__":
     dataset_dir = "datasets/cad-recode-v1.5"
     output_dir = "datasets/cad-recode-render-v1"
-    train_size = 20000
+    train_size = 10000
     val_size = 1000
     images_per_cad = 8
 
