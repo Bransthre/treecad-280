@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch.utils.data import DataLoader, IterableDataset, Dataset, get_worker_info
 from torchvision import models
 
 import cadquery as cq
@@ -9,8 +9,8 @@ from cadquery import *
 import matplotlib.pyplot as plt
 
 from datrie import Trie
-from no_interaction_vis import no_interact_show
-from vocabularies import vocabularies
+from .no_interaction_vis import no_interact_show
+from .vocabularies import vocabularies
 
 import os
 from tqdm import tqdm
@@ -100,7 +100,8 @@ class AutoRegressiveDataset(IterableDataset):
                 # Check if the directory exists
                 for _, file_name in tqdm(
                     enumerate(os.listdir(batch_dir)),
-                    desc=f"Processing files in {batch_dir}",
+                    desc=f"Processing CAD files in {batch_dir}",
+                    leave=False,
                 ):
                     file_path = os.path.join(batch_dir, file_name)
                     if os.path.isfile(file_path):
@@ -120,7 +121,7 @@ class AutoRegressiveDataset(IterableDataset):
             all_img_directories = os.listdir(img_dataset_dir)
             for file_idx in tqdm(
                 range(len(all_img_directories)),
-                desc="Processing batches",
+                desc="Processing images",
                 leave=False,
             ):
                 zipped_imgs_name = all_img_directories[file_idx]
@@ -206,16 +207,106 @@ class AutoRegressiveDataset(IterableDataset):
         all_batches = []
         for i in tqdm(
             # range(0, len(self.all_tokenized_texts), self.batch_size),
-            range(2),
+            range(150),
             desc="Producing batches",
             leave=False,
             total=2,  # len(self.all_tokenized_texts) // self.batch_size,
         ):
             batch = self._produce_batch()
-            for j in range(100):
-                all_batches.append(batch)
+            all_batches.append(batch)
         return iter(all_batches)
 
     def __len__(self):
-        return 2000
+        return 150
         # return len(self.all_tokenized_texts) // self.batch_size
+
+
+class CADImageDataset(Dataset):
+    def __init__(self, train=True):
+        self.tokenizer = Tokenizer(vocabularies)
+        all_data_indices = {}
+        if train:
+            text_dataset_dir = "/home/brandonh/datasets/cad-recode-v1.5/train/"
+            img_dataset_dir = "/home/brandonh/datasets/cad-recode-render-v1/train"
+            all_img_directories = os.listdir(img_dataset_dir)
+            all_img_dir_prefixes = set(
+                [
+                    file_name.split("_")[0]
+                    for file_name in all_img_directories
+                    if file_name.endswith(".npy")
+                ]
+            )
+            all_img_dir_prefixes = list(all_img_dir_prefixes)
+            for in_list_idx in tqdm(
+                range(len(all_img_dir_prefixes)),
+                desc="Processing images",
+                leave=False,
+            ):
+                file_idx = all_img_dir_prefixes[in_list_idx]
+                indices_path = os.path.join(
+                    img_dataset_dir, f"{file_idx}_cad_indices.npy"
+                )
+                with open(indices_path, "rb") as fp:
+                    cad_indices = np.load(fp)
+                for in_file_index, cad_index in enumerate(cad_indices):
+                    batch_idx = cad_index // 10000
+                    if batch_idx < 10:
+                        batch_idx = f"0{batch_idx}"
+
+                    all_data_indices[cad_index] = {
+                        "img_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_images.npy"
+                        ),
+                        "rolls_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_rolls.npy"
+                        ),
+                        "elevations_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_elevations.npy"
+                        ),
+                        "img_idx_in_file": in_file_index,
+                        "text_path": os.path.join(
+                            text_dataset_dir,
+                            f"batch_{batch_idx}/{cad_index % 10000}.py",
+                        ),
+                    }
+        self.all_data_indices = all_data_indices
+        self.all_data_indices_key = list(all_data_indices.keys())
+
+    def __getitem__(self, index):
+        cad_index = self.all_data_indices_key[index]
+        data = self.all_data_indices[cad_index]
+        img_path = data["img_path"]
+        rolls_path = data["rolls_path"]
+        elevations_path = data["elevations_path"]
+        text_path = data["text_path"]
+        img_idx_in_file = data["img_idx_in_file"]
+
+        with open(img_path, "rb") as fp:
+            images = np.load(fp)[img_idx_in_file]
+        with open(rolls_path, "rb") as fp:
+            rolls = np.load(fp)[img_idx_in_file]
+        with open(elevations_path, "rb") as fp:
+            elevations = np.load(fp)[img_idx_in_file]
+        with open(text_path, "r") as fp:
+            cad_code = "".join([s.replace("\n", ";") for s in fp.readlines()[1:]])
+            tokenized_cad_code = self.tokenizer.tokenize(cad_code)
+        return (images, rolls, elevations, tokenized_cad_code)
+
+    def __len__(self):
+        return len(self.all_data_indices_key)
+
+
+def collate_fn(batch):
+    images, rolls, elevations, tokenized_cad_code = zip(*batch)
+    images = torch.stack([torch.Tensor(img) for img in images]) / 255
+    rolls = torch.stack([torch.Tensor(roll) for roll in rolls])
+    elevations = torch.stack([torch.Tensor(elev) for elev in elevations])
+    tokenized_cad_code = torch.stack(
+        [torch.Tensor(code).long() for code in tokenized_cad_code]
+    )
+    return {
+        "images": images,
+        "rolls": rolls,
+        "elevations": elevations,
+        "tokenized_cad_code": tokenized_cad_code,
+    }

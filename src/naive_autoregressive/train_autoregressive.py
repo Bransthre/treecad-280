@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from torchvision import models
+from torchvision_vit import VisionTransformer
 
 
 import cadquery as cq
@@ -57,7 +57,7 @@ class BaselineCADGenerator(nn.Module):
 
     def __init__(self, output_dim):
         super().__init__()
-        self.encoder = models.VisionTransformer(
+        self.encoder = VisionTransformer(
             image_size=128,
             patch_size=16,
             num_classes=output_dim,
@@ -65,6 +65,7 @@ class BaselineCADGenerator(nn.Module):
             num_heads=12,
             hidden_dim=768,
             mlp_dim=3072,
+            in_channels=3 * 8,
         )  # I don't know if this is the right parameters but here we go.
         self.tokenizer = Tokenizer(vocabularies)
         self.token_embedding = nn.Embedding(len(self.tokenizer._vocabulary), 768)
@@ -189,8 +190,6 @@ def train(config):
     dataloader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
-        # shuffle=True,
-        # num_workers=8,
         drop_last=True,
     )
 

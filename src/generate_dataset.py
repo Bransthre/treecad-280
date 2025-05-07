@@ -109,7 +109,12 @@ def main(
                 np.save(f"{out_path}_rolls", split_rolls_stack)
                 np.save(f"{out_path}_elevations", split_elevations_stack)
                 np.save(f"{out_path}_cad_indices", split_cad_indices_stack)
-                split_images, split_rolls, split_elevations = [], [], []
+                split_images, split_rolls, split_elevations, split_cad_indices = (
+                    [],
+                    [],
+                    [],
+                    [],
+                )
                 print(f"[{i+1} of {data_limit}] saved batch to {out_path}")
 
 
@@ -117,7 +122,7 @@ if __name__ == "__main__":
     dataset_dir = "datasets/cad-recode-v1.5"
     output_dir = "datasets/cad-recode-render-v1"
     train_size = 10000
-    val_size = 0
+    val_size = 1000
     images_per_cad = 8
 
     main(
@@ -125,6 +130,6 @@ if __name__ == "__main__":
         train_size,
         val_size,
         output_dir,
-        train_start=80000,
+        train_start=70000,
         images_per_cad=images_per_cad,
     )
