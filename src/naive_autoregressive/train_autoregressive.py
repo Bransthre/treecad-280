@@ -96,9 +96,8 @@ class BaselineCADGenerator(nn.Module):
             ),
         )
         concat_img_repr = concat_img_repr * 2 - 1
-        concat_img_repr = self.rope_embedding(concat_img_repr)
         image_embeddings = self.encoder(concat_img_repr)
-        print(image_embeddings.shape)
+        image_embeddings = self.rope_embedding(image_embeddings)
         decoder_input = self.token_embedding(tokenized)
         roll_elevation_embeddings = self.roll_elevation_embedding(
             roll_idxs, elevation_idxs

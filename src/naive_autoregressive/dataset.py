@@ -9,8 +9,8 @@ from cadquery import *
 import matplotlib.pyplot as plt
 
 from datrie import Trie
-from .no_interaction_vis import no_interact_show
-from .vocabularies import vocabularies
+from no_interaction_vis import no_interact_show
+from vocabularies import vocabularies
 
 import os
 from tqdm import tqdm
@@ -117,11 +117,13 @@ class AutoRegressiveDataset(IterableDataset):
                 "/home/vint/treecad-280/datasets/cad-recode-render-v1/train"
             )
             all_imgs = []
-            for batch_id, zipped_imgs_name in tqdm(
-                enumerate(os.listdir(img_dataset_dir)),
+            all_img_directories = os.listdir(img_dataset_dir)
+            for file_idx in tqdm(
+                range(len(all_img_directories)),
                 desc="Processing batches",
                 leave=False,
             ):
+                zipped_imgs_name = all_img_directories[file_idx]
                 file_path = os.path.join(img_dataset_dir, zipped_imgs_name)
                 with open(file_path, "rb") as fp:
                     images = np.load(fp)  # (100, 8, 128, 128, 3)
