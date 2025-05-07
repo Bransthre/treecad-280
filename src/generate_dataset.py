@@ -4,64 +4,90 @@ from naive_autoregressive.no_interaction_vis import no_interact_show
 import cadquery as cq
 import matplotlib.pyplot as plt
 import os
+import numpy as np
+from pathlib import Path
 
-# cad_code = """
-# w0=cq.Workplane('ZX',origin=(0,3,0));r=w0.sketch().segment((-55,-41),(-41,-59)).segment((-40,-58)).segment((-24,-72)).segment((-12,-60)).segment((-27,-47)).segment((0,-27)).segment((0,-29)).segment((77,-29)).segment((77,2)).arc((77,69),(31,21)).segment((0,21)).segment((0,0)).close().assemble().push([(-29,-55)]).circle(5,mode='s').finalize().extrude(-62).union(w0.workplane(offset=-30/2).moveTo(-86.5,4).box(27,28,30)).union(w0.sketch().push([(38,44)]).circle(28).push([(38,43.5)]).rect(8,41,mode='s').finalize().extrude(57))
-# """
+IMG_H = 128
+IMG_W = 128
 
-# rolls = [
-#     -180,
-#     -150,
-#     -135,
-#     -120,
-#     -90,
-#     -60,
-#     -45,
-#     -30,
-#     0,
-#     30,
-#     45,
-#     60,
-#     90,
-#     120,
-#     135,
-#     150,
-#     180,
-# ]
-# elevations = [-90, -60, -45, -30, 0, 30, 45, 60, 90]
-# r = None
-# exec(cad_code)
-# for example_id in [266, 366, 466]:
-#     for roll in rolls:
-#         for elevation in elevations:
-#             img = no_interact_show(
-#                 r,
-#                 roll=roll,
-#                 elevation=elevation,
-#                 interact=False,
-#             )
-#             plt.imsave(
-#                 f"./img_debug/{example_id}-img_r{roll}_e{elevation}.png",
-#                 img,
-#             )
+def load_cad_data(cad_path):
+    """
+    loads and parses cadquery data from .py path specified
+    """
+    with open(cad_path, 'r') as f:
+        cad_text = f.read()
+    cad_data = {"r": None}
+    exec(cad_text, cad_data)
+    return cad_data["r"]
 
-def main(dataset_dir, train_size, val_size, output_dir):
+def render_cad_data(cad_data, rolls, elevations):
+    """
+    renders cad_data (cadquery workplane object) for given rolls and elevations
+    returns list of images
+    """
+    images = []
+    for roll, elevation in zip(rolls, elevations):
+        img = no_interact_show(
+            cad_data,
+            roll=roll,
+            elevation=elevation,
+            interact=False,
+        )
+        images.append(img)
+    return images
+
+def main(dataset_dir, train_size, val_size, output_dir, images_per_cad=8, save_every=10):
     """
     given dataset directory, size of training and validation split
     saves renders to output dir
     """
-    
     for split, data_limit in [("train", train_size), ("val", val_size)]:
-        # get python file paths
-        data_path = os.path.join(dataset_dir, split)
+        split_path = os.path.join(dataset_dir, split)
+        split_output_dir = os.path.join(output_dir, split)
+        os.makedirs(split_output_dir, exist_ok=True)
+        split_images = []
 
-        # render iamges up to specified limit
+        for i in range(data_limit):
+            # get cad file paths
+            filename = f"{i}.py"
+            if split == "train":
+                batch_idx = i//10000
+                data_path = os.path.join(split_path, f"batch_{batch_idx:02}", filename)
+            else:
+                data_path = os.path.join(split_path, filename)
+
+            # read and parse cad files
+            if os.path.exists(data_path):
+                cad_data = load_cad_data(data_path)
+                # render images
+                rolls = np.random.uniform(low=-180.0, high=180.0, size=(images_per_cad,))
+                elevations = np.random.uniform(low=-90.0, high=90.0, size=(images_per_cad,))
+                cad_images = render_cad_data(cad_data, rolls, elevations) # list(H, W, C)
+                cad_images = np.stack(cad_images, axis=0) # (P, H, W, C)
+            
+            else:
+                cad_images = np.zeros((images_per_cad, IMG_H, IMG_W, 3), dtype=np.uint8)
+            
+            split_images.append(cad_images)
+
+            if ((len(split_images) >= save_every) or i+1 == data_limit):
+                split_images_stack = np.stack(split_images, axis=0) # (B, P, H, W, C)
+                out_path = os.path.join(split_output_dir, f"{i+1:05}")
+                np.save(out_path, split_images_stack)
+                split_images = []
+                print(f"[{i+1} of {data_limit}] saved batch to {out_path}")
 
 if __name__=="__main__":
     dataset_dir = "datasets/cad-recode-v1.5"
     output_dir = "datasets/cad-recode-render"
-    os.makedirs(output_dirs, exist_ok=True)
-    train_size = 10
-    val_size = 10
+    train_size = 100
+    val_size = 20
+    images_per_cad = 8
 
-    main(dataset_dir, train_size, val_size)
+    main(
+        dataset_dir,
+        train_size, 
+        val_size, 
+        output_dir, 
+        images_per_cad=images_per_cad,
+        )
