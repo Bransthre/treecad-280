@@ -130,6 +130,6 @@ if __name__ == "__main__":
         train_size,
         val_size,
         output_dir,
-        train_start=70000,
+        train_start=0,
         images_per_cad=images_per_cad,
     )
