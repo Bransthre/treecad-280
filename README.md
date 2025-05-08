@@ -11,6 +11,8 @@ pip uninstall cadquery -y
 git clone git@github.com:CadQuery/cadquery.git
 cd cadquery
 pip install -e .
+cd ..
+pip install -r requirements.txt
 ```
 
 **All steps following here may require changing the dataset address in the script, since this is different per user.
