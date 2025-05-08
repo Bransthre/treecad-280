@@ -119,8 +119,8 @@ def main(
 
 
 if __name__ == "__main__":
-    dataset_dir = "datasets/cad-recode-v1.5"
-    output_dir = "datasets/cad-recode-render-v1"
+    dataset_dir = "/data/nzxyin/treecad/cad-recode-v1.5"
+    output_dir = "/data/nzxyin/treecad/cad-recode-render-v1"
     train_size = 10000
     val_size = 1000
     images_per_cad = 8

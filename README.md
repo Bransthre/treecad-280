@@ -3,9 +3,11 @@
 ## 1. Installing the Repository
 ```
 git clone <this repository>
+cd treecad-280
 conda create -n treecad python=3.11 -y
+conda activate treecad
 pip install cadquery # to manually install the dependencies of it
-pip uninstall cadquery
+pip uninstall cadquery -y
 git clone git@github.com:CadQuery/cadquery.git
 cd cadquery
 pip install -e .
