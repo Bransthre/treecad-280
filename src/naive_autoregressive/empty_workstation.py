@@ -93,3 +93,54 @@ def model_inference(
         )
     decoded_texts = ["".join(decoded_text) for decoded_text in decoded_texts]
     return decoded_texts
+
+
+"""
+Initiate with beam_size 5
+1. Top 5 logit tokens
+2. Expand from those tokens (5 * vocab_size) sequences
+3. Get the top 5 sequences amongst the above
+"""
+
+
+# Code up a decoder function that uses beam search
+@torch.inference_mode()
+def model_inference(model, renders, rolls, elevations, masks, tokenizer):
+    beam_size = 5
+    max_seq_len = 512
+    beams = [(0, [model.start_token_id])]  # (score, sequence)
+    for _ in range(max_seq_len):
+        new_beams = []
+
+        for score, seq in beams:
+            model_output_logits = model(
+                renders,
+                torch.tensor(seq).unsqueeze(0).cuda(),
+                rolls,
+                elevations,
+            )
+            print("model_output_logits.shape", model_output_logits.shape)
+            top_log_probs, top_indices = torch.topk(
+                model_output_logits[0, -1], beam_size
+            )
+            for i in range(beam_size):
+                new_seq = seq + [top_indices[i].item()]
+                new_score = score + top_log_probs[i].item()
+                new_beams.append((new_score, new_seq))
+        # Sort new beams by score and keep only the top `beam_size`
+        new_beams.sort(key=lambda x: x[0], reverse=True)
+        beams = new_beams[:beam_size]
+        if beams[0][1][-1] == model.end_token_id:
+            break
+    # Decode the best sequence
+    print("beams", len(beams))
+    print("beams[0]", beams[0])
+    print("beams[0][1]", beams[0][1])
+    best_sequence = beams[0][1]
+    decoded_text = "".join(
+        [
+            tokenizer._index_to_token.get(token_id, tokenizer._pad_token)
+            for token_id in best_sequence
+        ]
+    )
+    return decoded_text

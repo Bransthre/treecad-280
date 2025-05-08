@@ -120,6 +120,7 @@ class CADImageDataset(Dataset):
                     }
         self.all_data_indices = all_data_indices
         self.all_data_indices_key = list(all_data_indices.keys())
+        self.train = train
 
     def __getitem__(self, index):
         cad_index = self.all_data_indices_key[index]
@@ -141,7 +142,10 @@ class CADImageDataset(Dataset):
         return (images, rolls, elevations, tokenized_cad_code)
 
     def __len__(self):
-        return 64 * 100
+        if self.train:
+            return 64 * 1
+        else:
+            return 64
         # return len(self.all_data_indices_key)
 
 

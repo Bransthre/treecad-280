@@ -189,97 +189,122 @@ def render_cadquery_code(cadquery_code, rolls, elevations):
     return images
 
 
+# Code up a decoder function that uses beam search
+@torch.inference_mode()
 def model_inference(
-    model: BaselineCADGenerator, renders, rolls, elevations, tgt_masks, tokenizer
+    model: BaselineCADGenerator, renders, rolls, elevations, masks, tokenizer: Tokenizer
 ):
     beam_size = 5
-    batch_size = renders.shape[0]
-    seq_len = 512
+    max_seq_len = 512
+    repetition_penalty = 1.5
+    # import pdb
 
-    # Initialize best sequence contexts with the start token for beam search
-    best_sequence_contexts = torch.full(
-        (beam_size, 1), tokenizer._sos_token, dtype=torch.long
-    ).cuda()  # (B, beam_size, 1)
-
-    # Initialize beam scores (log probabilities of sequences)
-    beam_scores = torch.zeros(beam_size).cuda()  # (B, beam_size)
-    renders_repeat = renders.repeat(
-        (beam_size, 1, 1, 1, 1)
-    )  # (B * beam_size, k, 3, 128, 128)
-    rolls_repeat = rolls.repeat(beam_size, 1)  # (B * beam_size,)
-    elevations_repeat = elevations.repeat(beam_size, 1)  # (B * beam_size,)
-
-    print("renders.shape", renders_repeat.shape)
-    print(
-        "tokenized_input",
-        best_sequence_contexts.reshape(-1, best_sequence_contexts.shape[-1]).shape,
-    )
-    print("rolls.shape", rolls_repeat.shape)
-    print("elevations.shape", elevations_repeat.shape)
-
-    for i in range(seq_len):
-        print("best_sequence_contexts.shape", best_sequence_contexts.shape)
-        padding_mask = torch.zeros((beam_size, best_sequence_contexts.shape[-1])).cuda()
-
-        # Forward pass with current best sequences
-        next_token_logits = model(
-            renders_repeat,
-            best_sequence_contexts,
-            rolls_repeat,
-            elevations_repeat,
-            padding_mask,
-        )  # Reshape to (B, beam_size, vocab_size)
-
-        # Apply beam search: get the top `beam_size` token indices
-        print("L236 next_token_logits.shape", next_token_logits.shape)
-        next_token_logits = next_token_logits[
-            :, :, :-1
-        ]  # Remove unwanted dimension (vocab size) if needed
-        print("L240 next_token_logits.shape", next_token_logits.shape)
-        log_probs = torch.log_softmax(next_token_logits, dim=-1)  # Log probabilities
-        print("log_probs.shape", log_probs.shape)
-
-        # Compute total log probability scores for beam search
-        beam_scores = (
-            beam_scores.unsqueeze(-1) + log_probs
-        )  # (B, beam_size, vocab_size)
-
-        # Select top `beam_size` from each batch
-        print("beam_scores:", beam_scores.shape)
-        top_scores, top_indices = torch.topk(beam_scores.view(-1), beam_size, dim=-1)
-
-        # Extract the corresponding batch and beam indices
-        beam_idx = top_indices // tokenizer._vocabulary_size  # Get the batch index
-        token_idx = top_indices % tokenizer._vocabulary_size  # Get the token index
-
-        # Update the sequences
-        best_sequence_contexts = torch.cat(
+    # pdb.set_trace()
+    beams = [
+        (
+            0,
             [
-                best_sequence_contexts[beam_idx],
-                token_idx.unsqueeze(-1),
+                tokenizer._sos_token,
+                tokenizer._token_to_index["w0="],
+                tokenizer._token_to_index["cq.Workplane("],
             ],
-            dim=-1,
         )
+    ]  # (score, sequence)
+    for _ in range(max_seq_len):
+        new_beams = []
 
-        # Update the scores
-        beam_scores = top_scores
+        for score, seq in beams:
+            padding_mask = torch.zeros(
+                (1, len(seq)), dtype=torch.bool, device=renders.device
+            )
+            model_output_logits = model(
+                renders,
+                torch.tensor(seq).unsqueeze(0).cuda(),
+                rolls,
+                elevations,
+                padding_mask,
+            )
 
-        # Print shapes for debugging
-        print("best_sequence_contexts.shape", best_sequence_contexts.shape)
-        print("beam_scores.shape", beam_scores.shape)
-
-    # Convert to list of decoded tokens
-    best_sequence_contexts = best_sequence_contexts.squeeze().cpu().numpy()  # (B, T)
-    decoded_texts = []
-    for i in range(best_sequence_contexts.shape[0]):
-        decoded_texts.append(
+            for token in set(seq):
+                model_output_logits[:, :, token] /= repetition_penalty
+            # print("model_output_logits.shape", model_output_logits.shape)
+            top_log_probs, top_indices = torch.topk(
+                model_output_logits[0, -1], beam_size
+            )
+            for i in range(beam_size):
+                length_norm = (5 + len(seq)) / 6  # Smoothing factor
+                new_seq = seq + [top_indices[i].item()]
+                new_score = score + top_log_probs[i].item() / length_norm
+                new_beams.append((new_score, new_seq))
+        # Sort new beams by score and keep only the top `beam_size`
+        new_beams.sort(key=lambda x: x[0], reverse=True)
+        beams = new_beams[:beam_size]
+        if beams[0][1][-1] == tokenizer._eos_token:
+            break
+    # Decode the best sequence
+    # print("beams", len(beams))
+    # print("beams[0]", beams[0])
+    # print("beams[0][1]", beams[0][1])
+    best_sequence = beams[0][1]
+    top_5_sequences = [b[1] for b in beams]
+    top_5_decodes = [
+        "".join(
             [
                 tokenizer._index_to_token.get(token_id, tokenizer._pad_token)
-                for token_id in best_sequence_contexts[i]
+                for token_id in seq
             ]
         )
-    decoded_texts = ["".join(decoded_text) for decoded_text in decoded_texts]
-    return decoded_texts
+        for seq in top_5_sequences
+    ]
+    print("Top 5 sequences:")
+    for i, seq in enumerate(top_5_decodes):
+        print("-" * 20)
+        print(f"Sequence {i + 1}: {seq}")
+    print("-" * 20)
+
+    return top_5_decodes
+
+
+@torch.inference_mode()
+def model_inference_v2(
+    model: BaselineCADGenerator, renders, rolls, elevations, masks, tokenizer: Tokenizer
+):
+    # Generate the most probable token after each.
+    # This is a greedy search, not a beam search.
+    max_seq_len = 510
+    beams = [tokenizer._sos_token]  # (score, sequence)
+    beams.append(tokenizer._token_to_index["w0="])
+    beams.append(tokenizer._token_to_index["cq.Workplane("])
+    for _ in range(max_seq_len):
+        padding_mask = torch.zeros(
+            (1, len(beams)), dtype=torch.bool, device=renders.device
+        )
+        model_output_logits = model(
+            renders,
+            torch.tensor(beams).unsqueeze(0).cuda(),
+            rolls,
+            elevations,
+            padding_mask,
+        )
+
+        # print("model_output_logits.shape", model_output_logits.shape)
+        top_log_probs, top_indices = torch.topk(model_output_logits[0, -1], 1)
+        beams.append(top_indices[0].item())
+        if beams[-1] == tokenizer._eos_token:
+            break
+    # Decode the best sequence
+    # print("beams", len(beams))
+    # print("beams[0]", beams[0])
+    # print("beams[0][1]", beams[0][1])
+    best_sequence = beams
+    decoded_text = "".join(
+        [
+            tokenizer._index_to_token.get(token_id, tokenizer._pad_token)
+            for token_id in best_sequence
+        ]
+    )
+    print("Decoded text:", decoded_text)
+    return decoded_text
 
 
 def train(config):
@@ -338,9 +363,29 @@ def train(config):
             wandb.log({"loss/train_loss": loss}, step)
 
             if step % config["eval_steps"] == 0:
-                model.eval()
-                evaluate(model, config, step, dataset.tokenizer)
-                model.train()
+                print("*" * 20)
+                print("FOR TRAINING:")
+                first_detokenized_input = "".join(
+                    [
+                        dataset.tokenizer._index_to_token.get(
+                            token_id, dataset.tokenizer._pad_token
+                        )
+                        for token_id in tokenized_inputs[0].cpu().numpy()
+                    ]
+                )
+                print(first_detokenized_input)
+                model_inference(
+                    model,
+                    renderings[0:1],
+                    rolls[0:1],
+                    elevations[0:1],
+                    tgt_masks[0:1],
+                    dataset.tokenizer,
+                )
+                print("*" * 20)
+                # model.eval()
+                # evaluate(model, config, step, dataset.tokenizer)
+                # model.train()
 
             if step % config["save_steps"] == 0:
                 torch.save(
@@ -349,6 +394,7 @@ def train(config):
             within_step_batch_bar.update(1)
 
             step += 1
+            # print("STEP:", step)
         within_step_batch_bar.close()
 
 
@@ -400,24 +446,39 @@ def evaluate(
 
         outputs = model(renderings, tokenized_inputs, rolls, elevations, tgt_masks)
 
-        # if sample_render is None:
-        #     with torch.no_grad():
-        #         cadquery_code = model_inference(
-        #             model,
-        #             renderings[0:1],
-        #             rolls[0:1],
-        #             elevations[0:1],
-        #             tgt_masks[0:1],
-        #             tokenizer,
-        #         )
+        if sample_render is None:
+            print("*" * 20)
+            print("STEP:", step)
+            print("renderings.shape", renderings.shape)
+            with torch.no_grad():
+                print(
+                    "original detokenized inputs",
+                    "".join(
+                        [
+                            tokenizer._index_to_token.get(
+                                token_id, tokenizer._pad_token
+                            )
+                            for token_id in tokenized_inputs[0].cpu().numpy()
+                        ]
+                    ),
+                )
+                cadquery_code = model_inference(
+                    model,
+                    renderings[0:1],
+                    rolls[0:1],
+                    elevations[0:1],
+                    tgt_masks[0:1],
+                    tokenizer,
+                )
+            print("*" * 20)
 
-        #     images = render_cadquery_code(
-        #         cadquery_code[0],
-        #         rolls[0].unsqueeze(0),
-        #         elevations[0].unsqueeze(0),
-        #     )
+            # images = render_cadquery_code(
+            #     cadquery_code[0],
+            #     rolls[0].unsqueeze(0),
+            #     elevations[0].unsqueeze(0),
+            # )
 
-        #     log_renders(images)
+            # log_renders(images)
 
         loss = criterion(
             outputs.reshape(-1, config["vocab_size"]),
@@ -426,6 +487,7 @@ def evaluate(
 
         loss = loss.item()
         losses.append(loss)
+        break
     loss = sum(losses) / len(losses)
     wandb.log({"loss/eval_loss": loss}, step)
     return

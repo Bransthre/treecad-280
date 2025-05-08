@@ -5,5 +5,5 @@ num_renders: 4
 ckpt: null
 restore_step: null
 total_steps: 100000
-eval_steps: 100
+eval_steps: 200
 save_steps: 1000
