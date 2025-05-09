@@ -118,6 +118,50 @@ class CADImageDataset(Dataset):
                             f"batch_{batch_idx}/{cad_index}.py",
                         ),
                     }
+        else:
+            text_dataset_dir = "/data/nzxyin/treecad/cad-recode-v1.5/val/"
+            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/val"
+            all_img_directories = os.listdir(img_dataset_dir)
+            all_img_dir_prefixes = set(
+                [
+                    file_name.split("_")[0]
+                    for file_name in all_img_directories
+                    if file_name.endswith(".npy")
+                ]
+            )
+            all_img_dir_prefixes = list(all_img_dir_prefixes)
+            for in_list_idx in tqdm(
+                range(len(all_img_dir_prefixes)),
+                desc="Processing images",
+                leave=False,
+            ):
+                file_idx = all_img_dir_prefixes[in_list_idx]
+                indices_path = os.path.join(
+                    img_dataset_dir, f"{file_idx}_cad_indices.npy"
+                )
+                with open(indices_path, "rb") as fp:
+                    cad_indices = np.load(fp)
+                for in_file_index, cad_index in enumerate(cad_indices):
+                    # batch_idx = cad_index // 10000
+                    # if batch_idx < 10:
+                    #     batch_idx = f"0{batch_idx}"
+
+                    all_data_indices[cad_index] = {
+                        "img_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_images.npy"
+                        ),
+                        "rolls_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_rolls.npy"
+                        ),
+                        "elevations_path": os.path.join(
+                            img_dataset_dir, f"{file_idx}_elevations.npy"
+                        ),
+                        "img_idx_in_file": in_file_index,
+                        "text_path": os.path.join(
+                            text_dataset_dir,
+                            f"{cad_index}.py",
+                        ),
+                    }
         self.all_data_indices = all_data_indices
         self.all_data_indices_key = list(all_data_indices.keys())
         self.train = train

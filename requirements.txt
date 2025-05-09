@@ -8,3 +8,4 @@ absl-py
 pyyaml
 wandb
 datrie
+ipykernel
