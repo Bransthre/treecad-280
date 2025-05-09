@@ -26,7 +26,7 @@ from absl import flags
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string(
-    "yaml_file_path", "/home/brandonh/src/config/default_config.yaml", "yaml file path"
+    "yaml_file_path", "/home/nzxyin/treecad-280/src/config/default_config.yaml", "yaml file path"
 )
 flags.DEFINE_float("flt", 0.0, "")
 flags.DEFINE_integer("batch_size", 512, "batch size")
@@ -140,7 +140,7 @@ class BaselineCADGenerator(nn.Module):
         subsequent_mask = torch.triu(
             torch.full(
                 (decoder_input.shape[1], decoder_input.shape[1]),
-                float("-inf"),
+                -1e8,
                 device=decoder_input.device,
             ),
             diagonal=1,
@@ -165,7 +165,7 @@ class BaselineCADGenerator(nn.Module):
         decoder_output = self.decoder(
             decoder_input,
             visual_embeddings,
-            # tgt_mask=subsequent_mask,
+            tgt_mask=subsequent_mask,
             tgt_key_padding_mask=tgt_mask,
         )
         decoder_output_logits = self.out_logits(decoder_output)
@@ -389,7 +389,7 @@ def train(config):
 
             if step % config["save_steps"] == 0:
                 torch.save(
-                    model.module.state_dict(), f"model_weights_{run.name}_{step}.pth"
+                    model.module.state_dict(), f"/data/nzxyin/treecad/ckpt/model_weights_{run.name}_{step}.pth"
                 )
             within_step_batch_bar.update(1)
 
@@ -495,6 +495,6 @@ def evaluate(
 
 if __name__ == "__main__":
     config = yaml.safe_load(
-        open("/home/brandonh/treeCAD/src/config/default_config.yaml", "r")
+        open("/home/nzxyin/treecad-280/src/config/default_config.yaml", "r")
     )
     train(config)

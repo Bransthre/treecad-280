@@ -4,3 +4,7 @@ tqdm
 torch
 torchvision
 vtk
+absl-py
+pyyaml
+wandb
+datrie

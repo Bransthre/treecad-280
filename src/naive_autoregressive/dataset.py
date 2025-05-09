@@ -75,8 +75,8 @@ class CADImageDataset(Dataset):
         self.tokenizer = Tokenizer(vocabularies)
         all_data_indices = {}
         if train:
-            text_dataset_dir = "/home/brandonh/datasets/cad-recode-v1.5/train/"
-            img_dataset_dir = "/home/brandonh/datasets/cad-recode-render-v1/train"
+            text_dataset_dir = "/data/nzxyin/treecad/cad-recode-v1.5/train/"
+            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/train"
             all_img_directories = os.listdir(img_dataset_dir)
             all_img_dir_prefixes = set(
                 [
