@@ -76,7 +76,7 @@ class CADImageDataset(Dataset):
         all_data_indices = {}
         if train:
             text_dataset_dir = "/data/nzxyin/treecad/cad-recode-v1.5/train/"
-            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/train"
+            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/cs280-cads/train"
             all_img_directories = os.listdir(img_dataset_dir)
             all_img_dir_prefixes = set(
                 [
@@ -120,7 +120,7 @@ class CADImageDataset(Dataset):
                     }
         else:
             text_dataset_dir = "/data/nzxyin/treecad/cad-recode-v1.5/val/"
-            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/val"
+            img_dataset_dir = "/data/nzxyin/treecad/cad-recode-render-v1/cs280-cads/val"
             all_img_directories = os.listdir(img_dataset_dir)
             all_img_dir_prefixes = set(
                 [

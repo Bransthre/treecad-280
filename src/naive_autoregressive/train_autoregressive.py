@@ -315,7 +315,7 @@ def train(config):
     model = BaselineCADGenerator(output_dim=config["vocab_size"]).cuda()
     if config["ckpt"] is not None:
         model.load_state_dict(
-            torch.load("model_weights.pth", map_location="cuda:0", weights_only=True)
+            torch.load(config["ckpt"], map_location="cuda:0", weights_only=True)
         )
     model = nn.DataParallel(model)
     dataloader = DataLoader(
